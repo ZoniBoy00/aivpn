@@ -14,7 +14,7 @@
 
 # ---- Stage 1: wireguard-go (userspace WireGuard) ---------------------------
 FROM golang:alpine AS wg-builder
-RUN apk add --no-cache git make
+RUN apk add --no-cache git make && mkdir -p /out
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/WireGuard/wireguard-go.git
 WORKDIR /src/wireguard-go
@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 go build -o /out/wireguard-go .
 
 # ---- Stage 2: microsocks (SOCKS5 proxy) ------------------------------------
 FROM alpine:3.20 AS socks-builder
-RUN apk add --no-cache build-base libev-dev git make
+RUN apk add --no-cache build-base libev-dev git make && mkdir -p /out
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/rofl0r/microsocks.git
 WORKDIR /src/microsocks
