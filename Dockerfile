@@ -13,25 +13,30 @@
 # ============================================================================
 
 # ---- Stage 1: wireguard-go (userspace WireGuard) ---------------------------
-FROM golang:alpine AS wg-builder
+FROM golang:1.24-alpine3.20@sha256:9f98e9893fbc798c710f3432baa1e0ac6127799127c3101d2c263c3a954f0abe AS wg-builder
+ARG WIREGUARD_GO_COMMIT=ecfc5a8d54462e18e13c72173e2623d16d8e25a0
 RUN apk add --no-cache git make && mkdir -p /out
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/WireGuard/wireguard-go.git
+RUN git clone https://github.com/WireGuard/wireguard-go.git \
+    && cd wireguard-go \
+    && git checkout "$WIREGUARD_GO_COMMIT"
 WORKDIR /src/wireguard-go
 RUN CGO_ENABLED=0 go build -o /out/wireguard-go .
 
 # ---- Stage 2: microsocks (SOCKS5 proxy) ------------------------------------
-FROM alpine:3.20 AS socks-builder
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS socks-builder
+ARG MICROSOCKS_COMMIT=69f004aeb7c4ed7da3bf538d60a2d705c5a618df
 RUN apk add --no-cache build-base libev-dev git make && mkdir -p /out
 WORKDIR /src
-RUN git clone --depth 1 https://github.com/rofl0r/microsocks.git
+RUN git clone https://github.com/rofl0r/microsocks.git \
+    && cd microsocks \
+    && git checkout "$MICROSOCKS_COMMIT"
 WORKDIR /src/microsocks
 RUN make
 RUN cp microsocks /out/microsocks
 
 # ---- Stage 3: runtime --------------------------------------------------------
-FROM alpine:3.20
-
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 # wireguard-tools : wg / wg-quick
 # iptables        : kill switch (no leak outside tunnel)
 # iproute2        : ip (used by wg-quick and entrypoint routing)
@@ -68,8 +73,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
 #   -v $(pwd)/config/wg0.conf:/etc/wireguard/wg0.conf:ro
 ENV WG_CONF=/etc/wireguard/wg0.conf
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s \
-    CMD bash -c '[ -f /var/run/vpn-up ] && wg show wg0 >/dev/null 2>&1'
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s \
+    CMD bash -c '[ -f /var/run/vpn-up ] && wg show wg0 >/dev/null 2>&1 && curl -fsS -m 10 "${HEALTHCHECK_URL:-https://api.ipify.org}" >/dev/null'
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["daemon"]

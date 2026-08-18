@@ -10,6 +10,12 @@ fail() { echo "  FAIL: $1"; FAIL=1; }
 
 echo "== AiVPN smoke tests =="
 
+echo "--- 0. shell syntax and fallback wiring ---"
+bash -n "$ROOT/docker-entrypoint.sh" && pass "entrypoint syntax" || fail "entrypoint syntax"
+grep -q 'wireguard-go wg0' "$ROOT/docker-entrypoint.sh" && pass "userspace fallback starts wireguard-go" || fail "userspace fallback missing"
+grep -q 'curl -fsS -m 10.*HEALTHCHECK_URL' "$ROOT/docker-entrypoint.sh" && pass "healthcheck verifies egress" || fail "egress healthcheck missing"
+grep -q 'git checkout.*WIREGUARD_GO_COMMIT\|git checkout.*MICROSOCKS_COMMIT' "$ROOT/Dockerfile" && pass "build dependencies pinned" || fail "build dependencies unpinned"
+
 echo "--- 1. entrypoint: version banner ---"
 out=$("$ROOT/docker-entrypoint.sh" version 2>&1)
 rc=$?

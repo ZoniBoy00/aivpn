@@ -180,23 +180,39 @@ docker run -d --name vpn-proton \
 docker exec vpn-proton curl -s https://ip-api.com/json
 
 # Status + egress IP
-docker exec vpn-proton status
+docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh status
 
 # One-shot: connect → print IP → exit
-docker exec vpn-proton connect
+docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh connect
 
 # AI-agent safe fetch (prompt-injection scanning)
 #   0 = clean, 77 = PI detected (content blocked), 1 = fetch error
-docker exec vpn-proton safefetch https://example.com/api/data
+docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh safefetch https://example.com/api/data
 
 # Plain curl through the tunnel
 docker exec vpn-proton curl -s -m 20 -A "Mozilla/5.0" https://example.com
 
 # Clean shutdown
-docker exec vpn-proton stop
+docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh stop
 # or
 docker stop vpn-proton && docker rm vpn-proton
 ```
+
+### systemd supervision
+
+For a persistent host installation, use the included template unit instead of
+running `docker run` manually. The config for a location must be available as
+`/opt/aivpn/config/<location>.conf`.
+
+```bash
+sudo install -m 0644 systemd/aivpn@.service /etc/systemd/system/aivpn@.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now aivpn@fi.service
+sudo systemctl status aivpn@fi.service
+```
+
+The unit restarts the container after a Docker or process failure. The
+container's own reconnect loop still handles ordinary WireGuard interruptions.
 
 ### Browser through VPN (SOCKS5)
 
@@ -245,6 +261,8 @@ docker exec vpn-tokyo curl -s https://ip-api.com/json
   tunnel exists.
 - **SOCKS5 bound to the `127.0.0.1` host port** (`-p 127.0.0.1::1080`) — not
   reachable from your LAN.
+- **Userspace fallback:** if the host kernel lacks WireGuard, AiVPN starts the
+  bundled `wireguard-go` backend. Set `FORCE_USERSPACE_WG=1` to test this path.
 - **Rules:**
   - `config/wg0.conf` contains a private key → `chmod 600`, never commit it
   - **Never `docker push`** the built image (the key can live in the filesystem)
@@ -260,13 +278,14 @@ docker exec vpn-tokyo curl -s https://ip-api.com/json
 | Netshield / Moderate NAT / Accelerator | Chosen when the config is generated, not switchable at runtime |
 | Secure Core | Not supported by third-party clients — regular servers work |
 | Container-only | `curl` on the host does NOT go through the tunnel |
+| Healthcheck dependency | The default healthcheck uses `https://api.ipify.org`; override `HEALTHCHECK_URL` if that endpoint is unavailable |
 
 ## 🔍 Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `Exited(1)` / tunnel won't come up | Wrong/expired key, server down → `docker logs vpn-proton` |
-| Tunnel fails with `RTNETLINK answers: Operation not permitted` | Host kernel lacks the WireGuard module — manual bring-up needs the kernel module + `/dev/net/tun` |
+| Tunnel fails with `RTNETLINK answers: Operation not permitted` | Check `/dev/net/tun` and `NET_ADMIN`; AiVPN automatically falls back to bundled `wireguard-go` when the kernel module is unavailable |
 | Logs show `sysctl: ... Read-only file system` | Docker 29 mounts `/proc/sys` read-only; the entrypoint's manual bring-up already handles this — if you still see it, the image is stale → rebuild |
 | `AGENTVPN... 401` | Wrong config — Proton's generated `.conf` is ready to use as-is |
 | SOCKS5 not responding | Check the port: `docker port vpn-proton 1080` |

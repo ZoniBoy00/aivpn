@@ -1,0 +1,20 @@
+[Unit]
+Description=AiVPN Proton WireGuard relay (%i)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aivpn
+ExecStartPre=-/usr/bin/docker rm -f vpn-%i
+ExecStart=/usr/bin/docker run --name vpn-%i --cap-add=NET_ADMIN --device=/dev/net/tun -v /opt/aivpn/config/%i.conf:/etc/wireguard/wg0.conf:ro -p 127.0.0.1::1080 aivpn:latest daemon
+ExecStop=/usr/bin/docker stop -t 15 vpn-%i
+ExecStopPost=-/usr/bin/docker rm -f vpn-%i
+Restart=always
+RestartSec=15
+TimeoutStartSec=0
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -19,21 +19,27 @@
 #  Environment:
 #    WG_CONF                    path to WireGuard config (default /etc/wireguard/wg0.conf)
 #    HEALTH_INTERVAL            seconds between health checks (default 60)
+#    HEALTHCHECK_URL            URL used to verify real egress (default api.ipify.org)
 #    RECONNECT_BACKOFF_INITIAL  seconds (default 10)
 #    RECONNECT_BACKOFF_MAX      seconds (default 300)
 #    MAX_INITIAL_CONNECT_ATTEMPTS  fail-fast cap on first connect (default 10)
 #    SOCKS_PORT                 SOCKS5 listen port inside container (default 1080)
 #    SAFEFETCH_TIMEOUT          curl timeout for safefetch in seconds (default 30)
+#    FORCE_USERSPACE_WG         force wireguard-go for testing (default 0)
 # ============================================================================
 
 VERSION="1.0.0"
 WG_CONF="${WG_CONF:-/etc/wireguard/wg0.conf}"
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-60}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://api.ipify.org}"
 RECONNECT_BACKOFF_INITIAL="${RECONNECT_BACKOFF_INITIAL:-10}"
 RECONNECT_BACKOFF_MAX="${RECONNECT_BACKOFF_MAX:-300}"
 MAX_INITIAL_CONNECT_ATTEMPTS="${MAX_INITIAL_CONNECT_ATTEMPTS:-10}"
 SOCKS_PORT="${SOCKS_PORT:-1080}"
 SAFEFETCH_TIMEOUT="${SAFEFETCH_TIMEOUT:-30}"
+FORCE_USERSPACE_WG="${FORCE_USERSPACE_WG:-0}"
+USE_USERSPACE_WG=0
+WG_GO_PID=""
 
 TUNNEL_UP_FLAG="/var/run/vpn-up"
 RESOLV_CONF="/etc/resolv.conf"
@@ -62,8 +68,11 @@ preflight() {
     command -v wg-quick >/dev/null 2>&1 || die "wg-quick not found"
     command -v iptables >/dev/null 2>&1 || warn "iptables not found — kill switch will be DISABLED"
     command -v ip     >/dev/null 2>&1 || die "ip not found (iproute2 missing)"
-    # Kernel WireGuard module? If missing we fall back to wireguard-go.
-    if ! ip link add wg-probe type wireguard 2>/dev/null; then
+    # Kernel WireGuard module? If missing, use wireguard-go.
+    if [ "$FORCE_USERSPACE_WG" = "1" ]; then
+        log "Userspace WireGuard backend forced by configuration"
+        USE_USERSPACE_WG=1
+    elif ! ip link add wg-probe type wireguard 2>/dev/null; then
         if command -v wireguard-go >/dev/null 2>&1; then
             log "Kernel wireguard module unavailable — will use wireguard-go (userspace)"
             USE_USERSPACE_WG=1
@@ -110,8 +119,13 @@ setup_firewall() {
 
     local ep_addr ep_ip ep_port tunnel_dns
     ep_addr=$(wg show wg0 endpoints 2>/dev/null | awk '{print $2}' | head -1)
-    ep_ip=$(echo "$ep_addr" | cut -d: -f1)
-    ep_port=$(echo "$ep_addr" | rev | cut -d: -f1 | rev)
+    if [[ "$ep_addr" =~ ^\[([^]]+)\]:([0-9]+)$ ]]; then
+        ep_ip="${BASH_REMATCH[1]}"
+        ep_port="${BASH_REMATCH[2]}"
+    else
+        ep_ip="${ep_addr%:*}"
+        ep_port="${ep_addr##*:}"
+    fi
     tunnel_dns=$(awk '/^nameserver/{print $2; exit}' "$RESOLV_CONF" 2>/dev/null)
 
     if [ -z "$ep_ip" ]; then
@@ -150,6 +164,15 @@ teardown_firewall() {
 
 # Bring the tunnel up. Tries the kernel module first, falls back to
 # wireguard-go (userspace) when the host kernel lacks the module.
+destroy_tunnel() {
+    if [ -n "${WG_GO_PID:-}" ]; then
+        kill "$WG_GO_PID" 2>/dev/null || true
+        wait "$WG_GO_PID" 2>/dev/null || true
+        WG_GO_PID=""
+    fi
+    ip link del wg0 2>/dev/null || true
+}
+
 bring_up_tunnel() {
     # Manual tunnel bring-up. wg-quick's `sysctl net.ipv4.conf.all.src_valid_mark`
     # and resolvconf steps fail inside Docker (proc/sys is mounted read-only),
@@ -157,8 +180,19 @@ bring_up_tunnel() {
     # MTU, routes. No fwmark policy routing — the default-route swap plus the
     # iptables kill switch keep all egress on wg0.
     local addr ep_ip default_gw default_dev
-    ip link del wg0 2>/dev/null || true
-    ip link add wg0 type wireguard || return 1
+    destroy_tunnel
+    if [ "$USE_USERSPACE_WG" -eq 1 ]; then
+        log "Starting wireguard-go userspace backend"
+        wireguard-go wg0 >/var/log/aivpn/wireguard-go.log 2>&1 &
+        WG_GO_PID=$!
+        for _ in $(seq 1 20); do
+            ip link show wg0 >/dev/null 2>&1 && break
+            sleep 0.1
+        done
+        ip link show wg0 >/dev/null 2>&1 || return 1
+    else
+        ip link add wg0 type wireguard || return 1
+    fi
     wg-quick strip "$WG_CONF" > /tmp/wg0-stripped.conf 2>/dev/null || return 1
     wg setconf wg0 /tmp/wg0-stripped.conf || return 1
     addr=$(awk -F'[,= ]+' '/^Address/{print $2; exit}' "$WG_CONF")
@@ -214,19 +248,16 @@ cleanup() {
     log "Shutting down — tearing down tunnel + SOCKS5"
     teardown_firewall
     pkill -x microsocks 2>/dev/null || true
-    ip link del wg0 2>/dev/null || true
-    [ -n "${WG_GO_PID:-}" ] && kill "$WG_GO_PID" 2>/dev/null || true
+    destroy_tunnel
     rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
     exit 0
 }
 trap cleanup SIGTERM SIGINT SIGHUP
 
 healthcheck() {
+    [ -f "$TUNNEL_UP_FLAG" ] || return 1
     wg show wg0 >/dev/null 2>&1 || return 1
-    local rx
-    rx=$(wg show wg0 transfer 2>/dev/null | awk '{print $2}')
-    [ -n "$rx" ] || return 1
-    return 0
+    curl -fsS -m 10 "$HEALTHCHECK_URL" >/dev/null 2>&1 || return 1
 }
 
 # --- Commands ------------------------------------------------------------------
@@ -256,7 +287,7 @@ cmd_daemon() {
         rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
         log "tunnel down — reconnecting in ${backoff}s"
         teardown_firewall
-        ip link del wg0 2>/dev/null || true
+        destroy_tunnel
         sleep "$backoff" &
         wait $! || true
         if connect_once; then
@@ -333,8 +364,10 @@ Commands:
 Environment (docker run -e ...):
   WG_CONF                    WireGuard config path (default /etc/wireguard/wg0.conf)
   HEALTH_INTERVAL            health check interval seconds (default 60)
+  HEALTHCHECK_URL             egress URL for health checks (default https://api.ipify.org)
   SOCKS_PORT                 SOCKS5 port inside container (default 1080)
-  SAFEFETCH_TIMEOUT          safefetch curl timeout seconds (default 30)
+  SAFEFETCH_TIMEOUT           curl timeout seconds (default 30)
+  FORCE_USERSPACE_WG          force userspace WireGuard for testing (default 0)
 EOF
 }
 
