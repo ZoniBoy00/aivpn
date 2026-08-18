@@ -23,6 +23,7 @@ goes through the VPN; the host network is never touched.**
 - [What is this](#-what-is-this)
 - [Architecture](#-architecture)
 - [Requirements](#-requirements)
+- [Creating a Proton WireGuard config](#-creating-a-proton-wireguard-config)
 - [Installation](#-installation)
 - [Usage](#-usage)
   - [Starting the container](#starting-the-container)
@@ -98,17 +99,50 @@ Use cases:
 - **Proton VPN account** ([protonvpn.com](https://protonvpn.com)) — Unlimited recommended
 - Host kernel or userspace: `/dev/net/tun` and `--cap-add=NET_ADMIN` (the container handles the rest)
 
+## 🛠️ Creating a Proton WireGuard config
+
+The VPN configs are created on the Proton account page — no API keys, no
+third-party sign-ups.
+
+**1. Open the downloads page**
+
+Go to <https://account.protonvpn.com/downloads> (Proton VPN → Downloads).
+The page has two parts:
+- **Proton VPN -päätteet** (client apps) — not needed here
+- **WireGuard-määritykset** (WireGuard configurations) — the configs you have
+  already created, each with its **expiry date** (valid ~1 year, e.g.
+  `Aug 18, 2027`)
+
+**2. Create a new config**
+
+Click create new (Luo määritys) and fill in:
+- **Name** — something recognizable, e.g. `Hermes Agent FI`
+- **Platform** — select **GNU/Linux**
+- **VPN options** — enable **VPN Accelerator** (NetShield / Moderate NAT are
+  fixed at generation time, not switchable at runtime)
+- **Server** — pick a location; the UI recommends the lowest-load server
+  (e.g. `FI#72`) and lists countries alphabetically (Afganistan, Alankomaat, …)
+
+**3. Download**
+
+Download the `.conf`, save it as `config/wg0.conf` (or one file per location,
+e.g. `config/us.conf`) and `chmod 600` it. The config contains your private
+key — **never commit it, never `docker push` an image with it**.
+
+```bash
+mkdir -p config
+cp ~/Downloads/Hermes-Agent-FI.conf config/wg0.conf
+chmod 600 config/wg0.conf
+```
+
+> One container = one location. For more countries, create another config on
+> the same page (each counts toward the Proton 10-device limit) and mount it
+> under a different container name — see [Multiple locations](#multiple-locations).
+
 ## 🔧 Installation
 
 ```bash
-# 1. Create the WireGuard config from Proton (https://account.protonvpn.com/downloads):
-#    → WireGuard-määritykset section → "Luo määritys" / create new config:
-#      - Name it (e.g. "Hermes Agent FI")
-#      - Platform: GNU/Linux
-#      - VPN Accelerator: ON
-#      - Pick a server (recommended = lowest load, e.g. FI#72)
-#    → download the .conf. Configs are valid ~1 year (expiry shown on the page).
-
+# 1. Create the WireGuard config — see "Creating a Proton WireGuard config" above
 # 2. Run setup (asks for the config path + builds the image)
 ./scripts/setup.sh
 
