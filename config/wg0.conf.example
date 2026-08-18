@@ -1,0 +1,26 @@
+# ============================================================================
+#  AiVPN — Proton WireGuard config template
+# ----------------------------------------------------------------------------
+#  This is the STRUCTURE of the file Proton generates. Do not hand-edit your
+#  real config — download it from:
+#
+#      https://account.protonvpn.com  →  Downloads → WireGuard configuration
+#
+#  Proton's generated file is ready to use as-is (it already contains your
+#  private key and assigned address). Save it as  config/wg0.conf  (or run
+#  ./scripts/setup.sh which does it for you).
+#
+#  SECURITY: the PrivateKey is a credential — keep config/wg0.conf mode 600,
+#  never commit it to git, never docker-push the built image.
+# ============================================================================
+
+[Interface]
+# Filled in by Proton when you generate the config (replace placeholders)
+PrivateKey = REPLACE_WITH_YOUR_PRIVATE_KEY
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
+
+[Peer]
+PublicKey = REPLACE_WITH_PROTON_SERVER_PUBLIC_KEY
+AllowedIPs = 0.0.0.0/0
+Endpoint = REPLACE_WITH_SERVER_IP:51820

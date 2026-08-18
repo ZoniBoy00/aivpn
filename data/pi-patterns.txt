@@ -1,0 +1,29 @@
+# AiVPN — prompt injection heuristic patterns
+# One extended-regex pattern per line. Case-insensitive.
+# Curated from public PI research (OWASP LLM Top 10, academic datasets).
+# Lines starting with # are comments.
+
+# Instruction override / hierarchy
+ignore (all|any|the|previous|prior|above|earlier).*(instruction|instructions|prompt|prompts|rules)
+(disregard|forget|forget all|ignore).*(previous|prior|above|earlier|system).*(instruction|instructions|prompt|rules)
+(you are now|from now on you are|act as if you are|pretend you are).*(unrestricted|no rules|without rules)
+override (all|any|previous|system).*(instruction|instructions|prompt|rules)
+instruction[s]? (above|below|in this).*(override|supersede|take precedence)
+system (prompt|instruction|message).*(reveal|show|print|leak|give)
+reveal (your|the).*(system prompt|instructions|instructions in full)
+(print|show|display|repeat|output).*(the system prompt|your instructions|initial prompt)
+
+# Safety bypass
+(disable|bypass|turn off|remove).*(safety|guardrail|filter|restriction|moderation|content policy)
+(you|the ai|model).*(have no (restrictions|limits|guardrails))
+(no (rules|restrictions|limits|filter)|without (rules|restrictions|filters))
+(jailbreak|do anything now|d.a.n|grandma|developer mode|god mode)
+(simulate|pretend).*(jailbreak|unfiltered|uncensored)
+
+# Role assumption
+(act as|pretend to be|you are).*(another|different).*(ai|model|assistant|bot)
+(ignore your|disregard your).*(programming|training|original|core).*(instructions|purpose)
+
+# Extraction attempts
+(what are|list|reveal).*(your|the).*(system prompt|initial prompt|programming instructions)
+(how do you|what are).*(your).*(instructions|prompt|system)
