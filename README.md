@@ -85,8 +85,9 @@ Use cases:
 
 | Component | Role |
 |---|---|
-| `wireguard-go` | Userspace WireGuard (fallback when the host kernel lacks the module) |
-| `wg-quick` | Tunnel configuration and bring-up |
+| `wg` / `ip` | Manual tunnel bring-up (`wg setconf` + `ip route`) — no wg-quick dependency |
+| `wg-quick` | Config stripping only (`wg-quick strip` feeds `wg setconf`) |
+| `wireguard-go` | Userspace WireGuard, installed in the image (not used by the manual bring-up) |
 | `microsocks` | SOCKS5 proxy inside the container (port 1080) |
 | `iptables` | Kill switch: all egress except through the tunnel = DROP |
 | `pi-scan.sh` | Prompt-injection scanner for the `safefetch` command |
@@ -228,10 +229,11 @@ docker exec vpn-tokyo curl -s https://ip-api.com/json
 | Symptom | Cause / fix |
 |---|---|
 | `Exited(1)` / tunnel won't come up | Wrong/expired key, server down → `docker logs vpn-proton` |
-| `wg-quick up` fails with kernel module | No WG in host kernel → container falls back to `wireguard-go` (userspace) automatically |
+| Tunnel fails with `RTNETLINK answers: Operation not permitted` | Host kernel lacks the WireGuard module — manual bring-up needs the kernel module + `/dev/net/tun` |
+| Logs show `sysctl: ... Read-only file system` | Docker 29 mounts `/proc/sys` read-only; the entrypoint's manual bring-up already handles this — if you still see it, the image is stale → rebuild |
 | `AGENTVPN... 401` | Wrong config — Proton's generated `.conf` is ready to use as-is |
 | SOCKS5 not responding | Check the port: `docker port vpn-proton 1080` |
-| Other VPNs break on the host | Never use `--network=host`; if it leaked: `wg-quick down wg0` + route cleanup |
+| Other VPNs break on the host | Never use `--network=host`; if it leaked: `ip link del wg0` + route cleanup |
 
 ## ☕ Support this project
 
