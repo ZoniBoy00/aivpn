@@ -81,6 +81,12 @@ preflight() {
 # Alpine has no resolvconf, so wg-quick's DNS directive would fail.
 # We strip it and write /etc/resolv.conf ourselves.
 setup_dns() {
+    # Work on a writable copy — the mounted config may be read-only (:ro).
+    # wg-quick is invoked with this path, so the DNS strip survives.
+    local work_conf="/tmp/wg0.conf"
+    cp "$WG_CONF" "$work_conf" 2>/dev/null || { warn "cannot copy $WG_CONF to $work_conf — DNS setup skipped"; return 0; }
+    WG_CONF="$work_conf"
+
     local dns_line dns_server
     dns_line=$(grep -E '^[[:space:]]*DNS[[:space:]]*=' "$WG_CONF" | head -1 || true)
     [ -z "$dns_line" ] && return 0
@@ -91,7 +97,7 @@ setup_dns() {
     # Strip DNS directive so wg-quick does not invoke resolvconf
     sed -i -E '/^[[:space:]]*DNS[[:space:]]*=/d' "$WG_CONF"
     echo "nameserver $dns_server" > "$RESOLV_CONF"
-    log "DNS set to $dns_server (tunnel DNS)"
+    log "DNS set to $dns_server (tunnel DNS, work copy $WG_CONF)"
 }
 
 # Kill switch: block ALL egress that does not go through wg0.
@@ -150,7 +156,7 @@ bring_up_tunnel() {
         WG_GO_PID=$!
         sleep 2
     fi
-    if ! wg-quick up wg0; then
+    if ! wg-quick up "$WG_CONF"; then
         rc=1
     fi
 
@@ -201,7 +207,7 @@ cleanup() {
     log "Shutting down — tearing down tunnel + SOCKS5"
     teardown_firewall
     pkill -x microsocks 2>/dev/null || true
-    wg-quick down wg0 2>/dev/null || true
+    wg-quick down "$WG_CONF" 2>/dev/null || true
     [ -n "${WG_GO_PID:-}" ] && kill "$WG_GO_PID" 2>/dev/null || true
     rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
     exit 0
@@ -243,7 +249,7 @@ cmd_daemon() {
         rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
         log "tunnel down — reconnecting in ${backoff}s"
         teardown_firewall
-        wg-quick down wg0 2>/dev/null || true
+        wg-quick down "$WG_CONF" 2>/dev/null || true
         sleep "$backoff" &
         wait $! || true
         if connect_once; then
