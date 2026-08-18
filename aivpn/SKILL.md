@@ -34,7 +34,10 @@ account (no API keys, no separate sign-up).
 ## Setup & Build (one-time)
 
 ```bash
-git clone https://github.com/ZoniBoy00/aivpn && cd aivpn
+# Install as a Hermes skill (recommended):
+hermes skills install ZoniBoy00/aivpn/aivpn
+
+# Or build from the repo directly (https://github.com/ZoniBoy00/aivpn):
 ./scripts/setup.sh --config /path/to/proton-wg.conf   # provisions config + builds
 # or: make setup (interactive) / make build (build only)
 ```
@@ -85,7 +88,7 @@ docker exec vpn-proton safefetch https://example.com
 - **safefetch**: two-tier prompt-injection scan (heuristic regex + patterns)
   blocks injected instructions before they reach the agent. Fail-open.
 - Never share a vpn-* container's network namespace with untrusted containers
-  (microsocks listens on 0.0.0.0:1080 with no auth).
+  (microsocks listens on all interfaces, port 1080, with no auth).
 
 ## Multiple Locations at Once
 
