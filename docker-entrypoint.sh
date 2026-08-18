@@ -139,6 +139,10 @@ setup_firewall() {
     # Loopback — always allowed
     iptables -A OUTPUT -o lo -j ACCEPT
 
+    # Allow replies to Docker-published ports and tunnel DNS handshakes.
+    # Without this, the kill switch drops SOCKS5 responses back to the host.
+    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
     # WireGuard endpoint (UDP encapsulation must reach the real server)
     iptables -A OUTPUT -p udp -d "$ep_ip" --dport "${ep_port:-51820}" -j ACCEPT
 
