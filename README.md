@@ -101,9 +101,13 @@ Use cases:
 ## 🔧 Installation
 
 ```bash
-# 1. Download the WireGuard config from Proton:
-#    account.protonvpn.com → Downloads → WireGuard configuration
-#    → pick a server, download the .conf
+# 1. Create the WireGuard config from Proton (https://account.protonvpn.com/downloads):
+#    → WireGuard-määritykset section → "Luo määritys" / create new config:
+#      - Name it (e.g. "Hermes Agent FI")
+#      - Platform: GNU/Linux
+#      - VPN Accelerator: ON
+#      - Pick a server (recommended = lowest load, e.g. FI#72)
+#    → download the .conf. Configs are valid ~1 year (expiry shown on the page).
 
 # 2. Run setup (asks for the config path + builds the image)
 ./scripts/setup.sh
