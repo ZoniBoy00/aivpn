@@ -108,20 +108,19 @@ third-party sign-ups.
 
 Go to <https://account.protonvpn.com/downloads> (Proton VPN → Downloads).
 The page has two parts:
-- **Proton VPN -päätteet** (client apps) — not needed here
-- **WireGuard-määritykset** (WireGuard configurations) — the configs you have
-  already created, each with its **expiry date** (valid ~1 year, e.g.
-  `Aug 18, 2027`)
+- **Proton VPN clients** — the app download buttons — not needed here
+- **WireGuard configurations** — the configs you have already created, each
+  with its **expiry date** (valid ~1 year, e.g. `Aug 18, 2027`)
 
 **2. Create a new config**
 
-Click create new (Luo määritys) and fill in:
+Click **Create config** and fill in:
 - **Name** — something recognizable, e.g. `Hermes Agent FI`
 - **Platform** — select **GNU/Linux**
 - **VPN options** — enable **VPN Accelerator** (NetShield / Moderate NAT are
   fixed at generation time, not switchable at runtime)
 - **Server** — pick a location; the UI recommends the lowest-load server
-  (e.g. `FI#72`) and lists countries alphabetically (Afganistan, Alankomaat, …)
+  (e.g. `FI#72`) and lists countries alphabetically (Afghanistan, Netherlands, …)
 
 **3. Download**
 
