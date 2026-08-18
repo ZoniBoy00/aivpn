@@ -84,8 +84,10 @@ setup_dns() {
     # Work on a writable copy — the mounted config may be read-only (:ro).
     # wg-quick is invoked with this path, so the DNS strip survives.
     local work_conf="/tmp/wg0.conf"
-    cp "$WG_CONF" "$work_conf" 2>/dev/null || { warn "cannot copy $WG_CONF to $work_conf — DNS setup skipped"; return 0; }
-    WG_CONF="$work_conf"
+    if [ "$WG_CONF" != "$work_conf" ]; then
+        cp "$WG_CONF" "$work_conf" 2>/dev/null || { warn "cannot copy $WG_CONF to $work_conf — DNS setup skipped"; return 0; }
+        WG_CONF="$work_conf"
+    fi
 
     local dns_line dns_server
     dns_line=$(grep -E '^[[:space:]]*DNS[[:space:]]*=' "$WG_CONF" | head -1 || true)
@@ -94,7 +96,7 @@ setup_dns() {
     dns_server=$(echo "$dns_line" | sed -E 's/^[[:space:]]*DNS[[:space:]]*=[[:space:]]*//' | tr -d ' ' | cut -d, -f1)
     [ -z "$dns_server" ] && return 0
 
-    # Strip DNS directive so wg-quick does not invoke resolvconf
+    # Strip DNS directive so nothing tries to invoke resolvconf
     sed -i -E '/^[[:space:]]*DNS[[:space:]]*=/d' "$WG_CONF"
     echo "nameserver $dns_server" > "$RESOLV_CONF"
     log "DNS set to $dns_server (tunnel DNS, work copy $WG_CONF)"
@@ -149,28 +151,33 @@ teardown_firewall() {
 # Bring the tunnel up. Tries the kernel module first, falls back to
 # wireguard-go (userspace) when the host kernel lacks the module.
 bring_up_tunnel() {
-    local rc=0
-    if [ "${USE_USERSPACE_WG:-0}" = "1" ]; then
-        log "Starting wireguard-go (userspace)..."
-        wireguard-go wg0 >/var/log/aivpn/wireguard-go.log 2>&1 &
-        WG_GO_PID=$!
-        sleep 2
-    fi
-    if ! wg-quick up "$WG_CONF"; then
-        rc=1
-    fi
+    # Manual tunnel bring-up. wg-quick's `sysctl net.ipv4.conf.all.src_valid_mark`
+    # and resolvconf steps fail inside Docker (proc/sys is mounted read-only),
+    # so we replicate the essential steps directly: interface, keys, address,
+    # MTU, routes. No fwmark policy routing — the default-route swap plus the
+    # iptables kill switch keep all egress on wg0.
+    local addr ep_ip default_gw default_dev
+    ip link del wg0 2>/dev/null || true
+    ip link add wg0 type wireguard || return 1
+    wg-quick strip "$WG_CONF" > /tmp/wg0-stripped.conf 2>/dev/null || return 1
+    wg setconf wg0 /tmp/wg0-stripped.conf || return 1
+    addr=$(awk -F'[,= ]+' '/^Address/{print $2; exit}' "$WG_CONF")
+    [ -n "$addr" ] || addr="10.2.0.2/32"
+    ip -4 address add "$addr" dev wg0 || return 1
+    ip link set mtu 1420 up dev wg0 || return 1
 
-    # Pin the endpoint route through the original default gateway — some VM
-    # kernels (e.g. Rancher Desktop 6.6.x-virt) mishandle wg-quick's fwmark
-    # policy routing and loop the endpoint's own UDP back through wg0.
-    local default_gw default_dev ep_ip
+    # Pin the WG endpoint through the original default gateway so the UDP
+    # handshake never loops back through wg0.
     default_gw=$(ip route show default | awk '/default/ {print $3; exit}')
     default_dev=$(ip route show default | awk '/default/ {print $5; exit}')
-    ep_ip=$(wg show wg0 endpoints 2>/dev/null | awk '{print $2}' | cut -d: -f1 | head -1)
-    if [ "$rc" -eq 0 ] && [ -n "$default_gw" ] && [ -n "$default_dev" ] && [ -n "$ep_ip" ]; then
+    ep_ip=$(grep -E '^Endpoint' "$WG_CONF" | head -1 | sed -E 's/.*= *//; s/:.*//; s/[][]//g')
+    if [ -n "$default_gw" ] && [ -n "$default_dev" ] && [ -n "$ep_ip" ]; then
         ip route add "$ep_ip/32" via "$default_gw" dev "$default_dev" 2>/dev/null || true
     fi
-    return $rc
+
+    # All egress through the tunnel
+    ip route replace default dev wg0 || return 1
+    return 0
 }
 
 ensure_socks5() {
@@ -207,7 +214,7 @@ cleanup() {
     log "Shutting down — tearing down tunnel + SOCKS5"
     teardown_firewall
     pkill -x microsocks 2>/dev/null || true
-    wg-quick down "$WG_CONF" 2>/dev/null || true
+    ip link del wg0 2>/dev/null || true
     [ -n "${WG_GO_PID:-}" ] && kill "$WG_GO_PID" 2>/dev/null || true
     rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
     exit 0
@@ -249,7 +256,7 @@ cmd_daemon() {
         rm -f "$TUNNEL_UP_FLAG" 2>/dev/null || true
         log "tunnel down — reconnecting in ${backoff}s"
         teardown_firewall
-        wg-quick down "$WG_CONF" 2>/dev/null || true
+        ip link del wg0 2>/dev/null || true
         sleep "$backoff" &
         wait $! || true
         if connect_once; then
