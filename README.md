@@ -270,6 +270,31 @@ docker exec vpn-tokyo curl -s https://ip-api.com/json
   - Never share the container's network namespace with an untrusted container
     (`--network=container:vpn-...`)
 
+## 🧰 Managed host wrapper
+
+For a persistent host installation, `scripts/aivpn` provides one safe command
+surface for location selection, supervision, status, egress checks and SOCKS
+smoke tests. It never creates or stores WireGuard credentials.
+
+```bash
+chmod 0755 scripts/aivpn
+sudo ln -sfn "$(pwd)/scripts/aivpn" /usr/local/bin/aivpn
+
+# The config must already exist locally and be mode 600.
+aivpn up fi
+aivpn status
+aivpn ip
+aivpn socks
+aivpn test-all
+aivpn down
+```
+
+The included `docker-compose.yml` is a credential-free template. It expects a
+runtime-only file such as `config/fi.conf`; all `*.conf` files are ignored by
+Git. The service is hardened with dropped capabilities, `NET_ADMIN` only,
+`no-new-privileges`, localhost-only SOCKS5 publishing, resource limits, log
+rotation and a tunnel healthcheck. Do not publish port 1080 publicly.
+
 ## ⚠️ Limitations
 
 | Item | Details |

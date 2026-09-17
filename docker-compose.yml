@@ -1,0 +1,41 @@
+services:
+  aivpn:
+    build: .
+    image: aivpn:latest
+    container_name: ${AIVPN_CONTAINER_NAME:-aivpn-fi}
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./config/${AIVPN_LOCATION:-fi}.conf:/etc/wireguard/wg0.conf:ro
+    ports:
+      - "127.0.0.1:${AIVPN_HOST_PORT:-1080}:1080"
+    environment:
+      WG_CONF: /etc/wireguard/wg0.conf
+      HEALTH_INTERVAL: ${HEALTH_INTERVAL:-60}
+      HEALTHCHECK_URL: ${HEALTHCHECK_URL:-https://api.ipify.org}
+      SOCKS_PORT: 1080
+      SAFEFETCH_TIMEOUT: ${SAFEFETCH_TIMEOUT:-30}
+    tmpfs:
+      - /run:rw,noexec,nosuid,size=16m
+      - /tmp:rw,noexec,nosuid,size=32m
+      - /var/log/aivpn:rw,noexec,nosuid,size=16m
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "[ -f /var/run/vpn-up ] && wg show wg0 >/dev/null 2>&1 && curl -fsS -m 10 \"$${HEALTHCHECK_URL:-https://api.ipify.org}\" >/dev/null"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s

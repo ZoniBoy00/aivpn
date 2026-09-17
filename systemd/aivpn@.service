@@ -7,13 +7,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/aivpn
-ExecStartPre=-/usr/bin/docker rm -f vpn-%i
-ExecStart=/usr/bin/docker run --name vpn-%i --cap-add=NET_ADMIN --device=/dev/net/tun -v /opt/aivpn/config/%i.conf:/etc/wireguard/wg0.conf:ro -p 127.0.0.1::1080 aivpn:latest daemon
-ExecStop=/usr/bin/docker stop -t 15 vpn-%i
-ExecStopPost=-/usr/bin/docker rm -f vpn-%i
+ExecStartPre=-/usr/bin/docker rm -f aivpn-%i
+ExecStart=/usr/bin/docker run --name aivpn-%i --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true --device=/dev/net/tun:/dev/net/tun --tmpfs /run:rw,noexec,nosuid,size=16m --tmpfs /tmp:rw,noexec,nosuid,size=32m --tmpfs /var/log/aivpn:rw,noexec,nosuid,size=16m --memory=256m --pids-limit=128 --log-opt max-size=10m --log-opt max-file=3 -v /opt/aivpn/config/%i.conf:/etc/wireguard/wg0.conf:ro -p 127.0.0.1:1080:1080 -e WG_CONF=/etc/wireguard/wg0.conf -e HEALTH_INTERVAL=60 -e SOCKS_PORT=1080 aivpn:latest daemon
+ExecStop=/usr/bin/docker stop -t 15 aivpn-%i
+ExecStopPost=-/usr/bin/docker rm -f aivpn-%i
 Restart=always
-RestartSec=15
-TimeoutStartSec=0
+RestartSec=10
+TimeoutStartSec=120
 TimeoutStopSec=30
 
 [Install]
