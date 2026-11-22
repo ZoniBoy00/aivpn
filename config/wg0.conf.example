@@ -7,11 +7,14 @@
 #      https://account.protonvpn.com  →  Downloads → WireGuard configuration
 #
 #  Proton's generated file is ready to use as-is (it already contains your
-#  private key and assigned address). Save it as  config/wg0.conf  (or run
-#  ./scripts/setup.sh which does it for you).
+#  private key and assigned address). Save it as  config/<location>.conf,
+#  e.g. config/fi.conf  (or run ./scripts/setup.sh --location fi).
 #
-#  SECURITY: the PrivateKey is a credential — keep config/wg0.conf mode 600,
-#  never commit it to git, never docker-push the built image.
+#  SECURITY: the PrivateKey is a credential — keep the file mode 600 and
+#  never commit it to git (*.conf is git-ignored).
+#
+#  AiVPN requires the DNS line (it refuses to fall back to Docker's resolver).
+#  IPv6 entries in Address/AllowedIPs are ignored — IPv6 is blocked.
 # ============================================================================
 
 [Interface]

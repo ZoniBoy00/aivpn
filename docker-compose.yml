@@ -12,16 +12,27 @@ services:
       - no-new-privileges:true
     devices:
       - /dev/net/tun:/dev/net/tun
+    # IPv6 never goes through the tunnel, so it is switched off for the
+    # container (the entrypoint also blocks it with ip6tables).
+    # Remove these two lines only if your host boots with ipv6.disable=1.
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
     volumes:
       - ./config/${AIVPN_LOCATION:-fi}.conf:/etc/wireguard/wg0.conf:ro
     ports:
+      # localhost only — never publish the SOCKS5 port publicly
       - "127.0.0.1:${AIVPN_HOST_PORT:-1080}:1080"
     environment:
       WG_CONF: /etc/wireguard/wg0.conf
       HEALTH_INTERVAL: ${HEALTH_INTERVAL:-60}
       HEALTHCHECK_URL: ${HEALTHCHECK_URL:-https://api.ipify.org}
       SOCKS_PORT: 1080
+      SOCKS_ALLOW_FROM: ${SOCKS_ALLOW_FROM:-gateway}
+      SOCKS_USER: ${SOCKS_USER:-}
+      SOCKS_PASS: ${SOCKS_PASS:-}
       SAFEFETCH_TIMEOUT: ${SAFEFETCH_TIMEOUT:-30}
+      SAFEFETCH_MODE: ${SAFEFETCH_MODE:-block}
     tmpfs:
       - /run:rw,noexec,nosuid,size=16m
       - /tmp:rw,noexec,nosuid,size=32m
