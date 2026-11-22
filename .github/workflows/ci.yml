@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning docker-entrypoint.sh scripts/*.sh scripts/aivpn
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          config: .hadolint.yaml
+
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: smoke tests
+        run: bash scripts/smoke-test.sh
+
+  # Builds the image and proves the kill switch fails closed: the tunnel points
+  # at an unreachable endpoint (TEST-NET-1), so nothing may reach the internet —
+  # not through wg0, not around it via eth0, not over IPv6, not via Docker DNS.
+  kill-switch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build image
+        run: docker build -t aivpn:ci .
+
+      - name: version
+        run: docker run --rm aivpn:ci version
+
+      - name: start container with a dead endpoint
+        run: |
+          set -eu
+          mkdir -p ci
+          key=$(docker run --rm --entrypoint wg aivpn:ci genkey)
+          peer=$(docker run --rm --entrypoint wg aivpn:ci genkey | docker run --rm -i --entrypoint wg aivpn:ci pubkey)
+          cat > ci/wg0.conf <<EOF
+          [Interface]
+          PrivateKey = $key
+          Address = 10.2.0.2/32
+          DNS = 10.2.0.1
+
+          [Peer]
+          PublicKey = $peer
+          AllowedIPs = 0.0.0.0/0
+          Endpoint = 192.0.2.1:51820
+          EOF
+          chmod 600 ci/wg0.conf
+          docker network create --ipv6 --subnet fd00:a1:1::/64 aivpn-ci-v6
+          docker run -d --name ks --network aivpn-ci-v6 \
+            --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \
+            --device=/dev/net/tun:/dev/net/tun \
+            -e HEALTH_INTERVAL=600 \
+            -v "$PWD/ci/wg0.conf:/etc/wireguard/wg0.conf:ro" \
+            -p 127.0.0.1::1080 aivpn:ci daemon
+          for _ in $(seq 1 30); do
+            docker logs ks 2>&1 | grep -q 'Ready' && break
+            sleep 1
+          done
+          docker logs ks
+          docker logs ks 2>&1 | grep -q 'Ready'
+
+      - name: firewall state
+        run: |
+          docker exec ks iptables -S
+          docker exec ks ip6tables -S || true
+          docker exec ks ip route
+
+      - name: no egress through the dead tunnel
+        run: "! docker exec ks curl -sS -m 5 http://1.1.1.1"
+
+      - name: no egress around the tunnel via eth0
+        run: |
+          gw=$(docker exec ks sh -c "ip route show 192.0.2.1 | awk '{print \$3}'")
+          docker exec ks ip route add 1.1.1.1/32 via "$gw" dev eth0
+          ! docker exec ks curl -sS -m 5 http://1.1.1.1
+
+      - name: no IPv6 egress
+        run: "! docker exec ks curl -g -6 -sS -m 5 http://[2606:4700:4700::1111]/"
+
+      - name: no Docker embedded DNS
+        run: "! docker exec ks timeout 8 nslookup example.com 127.0.0.11"
+
+      # Probe: ask microsocks to CONNECT to itself (127.0.0.1:1080 inside the
+      # container, allowed via lo). An allowed client gets the SOCKS tunnel and
+      # then an empty reply (curl exit 52); a blocked client never gets past
+      # the SOCKS handshake.
+      - name: SOCKS5 usable from the host, blocked for neighbour containers
+        run: |
+          set +e -u  # exit codes are checked explicitly
+          port=$(docker port ks 1080/tcp | head -1 | sed -E 's/.*://')
+          curl -sS -m 5 --socks5 "127.0.0.1:$port" http://127.0.0.1:1080/; rc=$?
+          echo "host rc=$rc"; [ "$rc" -eq 52 ] || exit 1
+          ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ks)
+          docker run --rm --network aivpn-ci-v6 curlimages/curl:8.10.1 -sS -m 5 --socks5 "$ip:1080" http://127.0.0.1:1080/; rc=$?
+          echo "neighbour rc=$rc"; [ "$rc" -ne 52 ] && [ "$rc" -ne 0 ] || exit 1
+
+      - name: cleanup
+        if: always()
+        run: |
+          docker rm -f ks || true
+          docker network rm aivpn-ci-v6 || true
