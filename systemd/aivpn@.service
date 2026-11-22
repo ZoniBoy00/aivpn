@@ -1,3 +1,13 @@
+# AiVPN — systemd template unit
+#
+# One instance = one location (config/<location>.conf), e.g. aivpn@fi.service.
+# Only ONE instance can be active at a time: they share localhost:1080 and the
+# wrapper replaces any running AiVPN container on start. To switch location:
+#   systemctl disable --now aivpn@fi && systemctl enable --now aivpn@us
+#
+# Optional overrides (AIVPN_HOST_PORT, SOCKS_ALLOW_FROM, SOCKS_USER, SOCKS_PASS,
+# HEALTHCHECK_URL, TUNNEL_DNS) go in /opt/aivpn/aivpn.env.
+
 [Unit]
 Description=AiVPN Proton WireGuard relay (%i)
 Requires=docker.service
@@ -7,8 +17,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/aivpn
-ExecStartPre=-/usr/bin/docker rm -f aivpn-%i
-ExecStart=/usr/bin/docker run --name aivpn-%i --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true --device=/dev/net/tun:/dev/net/tun --tmpfs /run:rw,noexec,nosuid,size=16m --tmpfs /tmp:rw,noexec,nosuid,size=32m --tmpfs /var/log/aivpn:rw,noexec,nosuid,size=16m --memory=256m --pids-limit=128 --log-opt max-size=10m --log-opt max-file=3 -v /opt/aivpn/config/%i.conf:/etc/wireguard/wg0.conf:ro -p 127.0.0.1:1080:1080 -e WG_CONF=/etc/wireguard/wg0.conf -e HEALTH_INTERVAL=60 -e SOCKS_PORT=1080 aivpn:latest daemon
+EnvironmentFile=-/opt/aivpn/aivpn.env
+ExecStart=/opt/aivpn/scripts/aivpn foreground %i
 ExecStop=/usr/bin/docker stop -t 15 aivpn-%i
 ExecStopPost=-/usr/bin/docker rm -f aivpn-%i
 Restart=always

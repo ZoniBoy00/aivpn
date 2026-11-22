@@ -6,16 +6,19 @@ ROOT_DIR="$(cd "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
 IMAGE="${AIVPN_IMAGE:-aivpn:latest}"
 DEFAULT_PORT="1080"
+PREFIX="aivpn-"
+TEST_PREFIX="aivpntest-"
 
 usage() {
   cat <<'EOF'
 Usage: aivpn <command> [location]
 
 Commands:
-  up <location>         Start one managed VPN location
+  up <location>         Start one managed VPN location (replaces the active one)
   foreground <location> Run one location in the foreground for systemd
   down                  Stop and remove all managed containers
   status                Show container, tunnel, handshake and egress status
+  wait [timeout]        Wait until the active location's tunnel is up (default 90s)
   ip                    Print the VPN egress IP
   test <location>       Run a tunnel and SOCKS smoke test
   test-all              Test every configured location sequentially
@@ -23,8 +26,10 @@ Commands:
   socks                 Print the local SOCKS5 endpoint
   version               Show the container version
 
-Locations are WireGuard config names in config/.
-Only one location is allowed to own localhost:1080 at a time.
+Locations are WireGuard config names in config/ (config/<location>.conf).
+Only one location is active at a time and owns localhost:${AIVPN_HOST_PORT:-1080}.
+Tests of other locations run in a temporary container on a random port and do
+not touch the active one.
 EOF
 }
 
@@ -32,17 +37,54 @@ location_config() {
   local location="$1"
   [[ "$location" =~ ^[a-z0-9_-]+$ ]] || { echo "Invalid location: $location" >&2; exit 2; }
   local config="$ROOT_DIR/config/${location}.conf"
-  [[ -f "$config" ]] || { echo "Missing config: $config" >&2; exit 2; }
-  [[ "$(stat -c '%a' "$config")" == "600" ]] || { echo "Config must be mode 600: $config" >&2; exit 2; }
+  [[ -f "$config" ]] || { echo "Missing config: $config (see ./scripts/setup.sh --location $location)" >&2; exit 2; }
+  [[ "$(stat -c '%a' "$config")" == "600" ]] || { echo "Config must be mode 600: chmod 600 $config" >&2; exit 2; }
   printf '%s\n' "$config"
 }
 
-container_name() { printf 'aivpn-%s\n' "$1"; }
+container_name() { printf '%s%s\n' "$PREFIX" "$1"; }
+
+# IPv6 never goes through the tunnel. The sysctl only exists if the host kernel
+# has IPv6; without it Docker would refuse to start the container.
+ipv6_flags() {
+  if [[ -e /proc/sys/net/ipv6 ]]; then
+    printf '%s\n' --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1
+  fi
+}
+
+# Hardened flags shared by every `docker run`.
+run_flags() {
+  printf '%s\n' \
+    --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \
+    --device=/dev/net/tun:/dev/net/tun \
+    --tmpfs /run:rw,noexec,nosuid,size=16m --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+    --tmpfs /var/log/aivpn:rw,noexec,nosuid,size=16m \
+    --memory=256m --pids-limit=128 --log-opt max-size=10m --log-opt max-file=3 \
+    -e WG_CONF=/etc/wireguard/wg0.conf -e SOCKS_PORT=1080 \
+    -e HEALTH_INTERVAL="${HEALTH_INTERVAL:-60}" \
+    -e HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://api.ipify.org}" \
+    -e SOCKS_ALLOW_FROM="${SOCKS_ALLOW_FROM:-gateway}"
+  [[ -z "${SOCKS_USER:-}" ]] || printf '%s\n' -e SOCKS_USER="$SOCKS_USER" -e SOCKS_PASS="${SOCKS_PASS:-}"
+  [[ -z "${TUNNEL_DNS:-}" ]] || printf '%s\n' -e TUNNEL_DNS="$TUNNEL_DNS"
+  ipv6_flags
+}
 
 stop_managed() {
-  mapfile -t names < <(docker ps -a --format '{{.Names}}' | grep '^aivpn-' || true)
+  local names
+  mapfile -t names < <(docker ps -a --format '{{.Names}}' | grep "^${PREFIX}" || true)
   if ((${#names[@]})); then docker rm -f "${names[@]}" >/dev/null; fi
 }
+
+active_container() { docker ps --format '{{.Names}}' | grep "^${PREFIX}" | head -1 || true; }
+
+require_active() {
+  local name
+  name="$(active_container)"
+  [[ -n "$name" ]] || { echo "AiVPN is stopped" >&2; exit 1; }
+  printf '%s\n' "$name"
+}
+
+socks_port_of() { docker port "$1" 1080/tcp 2>/dev/null | head -1 | sed -E 's/.*://'; }
 
 compose_up() {
   local location="$1"
@@ -53,67 +95,127 @@ compose_up() {
 }
 
 foreground() {
-  local location="$1" config
+  local location="$1" config flags
   config="$(location_config "$location")"
+  mapfile -t flags < <(run_flags)
   stop_managed
-  exec docker run --rm --name "$(container_name "$location")" \
-    --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \
-    --device=/dev/net/tun:/dev/net/tun \
-    --tmpfs /run:rw,noexec,nosuid,size=16m --tmpfs /tmp:rw,noexec,nosuid,size=32m \
-    --tmpfs /var/log/aivpn:rw,noexec,nosuid,size=16m \
-    --memory=256m --pids-limit=128 --log-opt max-size=10m --log-opt max-file=3 \
+  exec docker run --rm --name "$(container_name "$location")" "${flags[@]}" \
     -v "$config:/etc/wireguard/wg0.conf:ro" \
     -p "127.0.0.1:${AIVPN_HOST_PORT:-$DEFAULT_PORT}:1080" \
-    -e WG_CONF=/etc/wireguard/wg0.conf -e HEALTH_INTERVAL="${HEALTH_INTERVAL:-60}" \
-    -e HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://api.ipify.org}" -e SOCKS_PORT=1080 \
     "$IMAGE" daemon
 }
 
-active_container() { docker ps --format '{{.Names}}' | grep '^aivpn-' | head -1 || true; }
 status() {
-  local name="$(active_container)"
+  local name
+  name="$(active_container)"
   [[ -n "$name" ]] || { echo "AiVPN: stopped"; return 1; }
   docker ps --filter "name=^${name}$" --format 'container={{.Names}} status={{.Status}} ports={{.Ports}}'
   docker exec "$name" /usr/local/bin/docker-entrypoint.sh status
 }
-ip() {
-  local name="$(active_container)"
-  [[ -n "$name" ]] || { echo "AiVPN is stopped" >&2; exit 1; }
+
+wait_up() {
+  local name
+  name="$(require_active)"
+  "$ROOT_DIR/scripts/wait-for-vpn.sh" "$name" "${1:-90}"
+}
+
+egress_ip() {
+  local name
+  name="$(require_active)"
   docker exec "$name" curl --fail --silent --show-error --max-time 20 "${HEALTHCHECK_URL:-https://api.ipify.org}"
   printf '\n'
 }
-TEST_CONTAINER=""
-cleanup_test_container() { [[ -z "${TEST_CONTAINER:-}" ]] || docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true; TEST_CONTAINER=""; }
-test_location() {
-  local location="$1" config name port egress
-  config="$(location_config "$location")"
-  name="$(container_name "$location")"
-  stop_managed; TEST_CONTAINER="$name"
-  docker run -d --name "$name" --cap-drop=ALL --cap-add=NET_ADMIN \
-    --security-opt=no-new-privileges:true --device=/dev/net/tun:/dev/net/tun \
-    --tmpfs /run:rw,noexec,nosuid,size=16m --tmpfs /tmp:rw,noexec,nosuid,size=32m \
-    --tmpfs /var/log/aivpn:rw,noexec,nosuid,size=16m --memory=256m --pids-limit=128 \
-    -v "$config:/etc/wireguard/wg0.conf:ro" -p 127.0.0.1::1080 \
-    -e WG_CONF=/etc/wireguard/wg0.conf "$IMAGE" daemon >/dev/null
-  trap cleanup_test_container RETURN
-  for _ in {1..30}; do docker logs "$name" 2>&1 | grep -q 'Ready' && break || sleep 2; done
-  docker logs "$name" 2>&1 | grep -q 'Ready' || { docker logs "$name" >&2; return 1; }
-  port="$(docker port "$name" 1080/tcp | sed -E 's/.*://')"
-  egress="$(curl --fail --silent --show-error --max-time 20 --socks5-hostname "127.0.0.1:$port" https://api.ipify.org)"
-  printf '%s: OK egress=%s socks=127.0.0.1:%s\n' "$location" "$egress" "$port"
-  cleanup_test_container; trap - RETURN
+
+socks() {
+  local name port
+  name="$(require_active)"
+  port="$(socks_port_of "$name")"
+  [[ -n "$port" ]] || { echo "No SOCKS5 port published for $name" >&2; exit 1; }
+  echo "socks5h://127.0.0.1:$port"
 }
-test_all() { local config location; for config in "$ROOT_DIR"/config/*.conf; do location="$(basename "$config" .conf)"; test_location "$location"; done; }
+
+TEST_CONTAINER=""
+cleanup_test_container() {
+  [[ -z "${TEST_CONTAINER:-}" ]] || docker rm -f "$TEST_CONTAINER" >/dev/null 2>&1 || true
+  TEST_CONTAINER=""
+}
+trap cleanup_test_container EXIT
+
+socks_check() {
+  local location="$1" port="$2" egress
+  egress="$(curl --fail --silent --show-error --max-time 20 --socks5-hostname "127.0.0.1:$port" https://api.ipify.org)" || {
+    echo "$location: FAIL (SOCKS5 on 127.0.0.1:$port did not reach the internet)" >&2
+    return 1
+  }
+  printf '%s: OK egress=%s socks=127.0.0.1:%s\n' "$location" "$egress" "$port"
+}
+
+# Returns non-zero on failure instead of exiting, so test-all can continue.
+test_location() {
+  local location="$1" config name flags port
+  config="$(location_config "$location")" || return 1
+
+  # The same WireGuard key must never run twice (the peers would fight over
+  # the session), so the active location is tested in place.
+  if [[ "$(active_container)" == "$(container_name "$location")" ]]; then
+    port="$(socks_port_of "$(container_name "$location")")"
+    socks_check "$location" "$port"
+    return
+  fi
+
+  name="${TEST_PREFIX}${location}"
+  mapfile -t flags < <(run_flags)
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  TEST_CONTAINER="$name"
+  docker run -d --name "$name" "${flags[@]}" \
+    -v "$config:/etc/wireguard/wg0.conf:ro" -p 127.0.0.1::1080 \
+    "$IMAGE" daemon >/dev/null || { echo "$location: FAIL (container did not start)" >&2; cleanup_test_container; return 1; }
+
+  local ready=0
+  for _ in {1..45}; do
+    if docker logs "$name" 2>&1 | grep -q 'Ready'; then ready=1; break; fi
+    [[ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" == "true" ]] || break
+    sleep 2
+  done
+  if ((!ready)); then
+    echo "$location: FAIL (tunnel did not come up)" >&2
+    docker logs "$name" 2>&1 | tail -n 30 >&2
+    cleanup_test_container
+    return 1
+  fi
+
+  port="$(socks_port_of "$name")"
+  local rc=0
+  socks_check "$location" "$port" || rc=1
+  cleanup_test_container
+  return "$rc"
+}
+
+test_all() {
+  local config location failed=()
+  shopt -s nullglob
+  for config in "$ROOT_DIR"/config/*.conf; do
+    location="$(basename "$config" .conf)"
+    test_location "$location" || failed+=("$location")
+  done
+  if ((${#failed[@]})); then
+    echo "Failed locations: ${failed[*]}" >&2
+    return 1
+  fi
+}
 
 command="${1:-help}"
 case "$command" in
   up) [[ $# -eq 2 ]] || { usage; exit 2; }; compose_up "$2";;
   foreground) [[ $# -eq 2 ]] || { usage; exit 2; }; foreground "$2";;
-  down) stop_managed;; status) status;; ip) ip;;
+  down) stop_managed;;
+  status) status;;
+  wait) wait_up "${2:-90}";;
+  ip) egress_ip;;
   test) [[ $# -eq 2 ]] || { usage; exit 2; }; test_location "$2";;
   test-all) test_all;;
-  logs) name="$(active_container)"; [[ -n "$name" ]] || { echo 'AiVPN is stopped' >&2; exit 1; }; exec docker logs -f "$name";;
-  socks) echo "socks5h://127.0.0.1:${AIVPN_HOST_PORT:-$DEFAULT_PORT}";;
+  logs) name="$(require_active)"; exec docker logs -f "$name";;
+  socks) socks;;
   version) docker run --rm "$IMAGE" version;;
   help|-h|--help) usage;;
   *) echo "Unknown command: $command" >&2; usage; exit 2;;
