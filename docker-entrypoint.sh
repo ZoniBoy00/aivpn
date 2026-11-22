@@ -38,6 +38,7 @@
 #    SAFEFETCH_TIMEOUT          curl timeout for safefetch in seconds (default 30)
 #    SAFEFETCH_MAX_BYTES        max response size for safefetch (default 10485760)
 #    SAFEFETCH_MODE             "block" (default) or "warn"
+#    PI_SCAN_TIMEOUT            max seconds for the scan (default 60, timeout = scanner error)
 #    FORCE_USERSPACE_WG         force wireguard-go for testing (default 0)
 # ============================================================================
 
@@ -56,6 +57,7 @@ SOCKS_PASS="${SOCKS_PASS:-}"
 SAFEFETCH_TIMEOUT="${SAFEFETCH_TIMEOUT:-30}"
 SAFEFETCH_MAX_BYTES="${SAFEFETCH_MAX_BYTES:-10485760}"
 SAFEFETCH_MODE="${SAFEFETCH_MODE:-block}"
+PI_SCAN_TIMEOUT="${PI_SCAN_TIMEOUT:-60}"
 FORCE_USERSPACE_WG="${FORCE_USERSPACE_WG:-0}"
 USE_USERSPACE_WG=0
 WG_GO_PID=""
@@ -453,7 +455,7 @@ cmd_safefetch() {
         return 1
     fi
 
-    /usr/local/bin/pi-scan.sh < "$body" 2>"$scan_err"
+    timeout "$PI_SCAN_TIMEOUT" /usr/local/bin/pi-scan.sh < "$body" 2>"$scan_err"
     scan_rc=$?
     case "$scan_rc" in
         0)  cat "$body"; return 0 ;;

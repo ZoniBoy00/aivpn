@@ -21,67 +21,71 @@
 #    2   scanner error (pattern file missing/unreadable) — fail-closed
 # ============================================================================
 
-set -u
+set -u -o pipefail
 
 # Container path first, repo path as fallback (for local testing).
 PATTERNS="${PI_PATTERNS:-/usr/local/share/aivpn/pi-patterns.txt}"
 [ -r "$PATTERNS" ] || PATTERNS="$(cd "$(dirname "$0")/.." && pwd)/data/pi-patterns.txt"
 [ -r "$PATTERNS" ] || { echo "[pi-scan] pattern file missing or unreadable — refusing to pass content" >&2; exit 2; }
 
-pat_file=$(mktemp) && text_file=$(mktemp) || { echo "[pi-scan] mktemp failed" >&2; exit 2; }
-trap 'rm -f "$pat_file" "$text_file"' EXIT
+pat_file=$(mktemp) && in_file=$(mktemp) && text_file=$(mktemp) || { echo "[pi-scan] mktemp failed" >&2; exit 2; }
+trap 'rm -f "$pat_file" "$in_file" "$text_file"' EXIT
 
 # Patterns: drop CRs (Windows checkouts), comments and blank lines.
 sed -e 's/\r$//' -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$PATTERNS" > "$pat_file" \
     || { echo "[pi-scan] cannot read patterns" >&2; exit 2; }
 [ -s "$pat_file" ] || exit 0
 
-# Normalise stdin into two lines: raw text and tag-stripped text.
-LC_ALL=C awk '
-function hexval(h,    i, c, v) {
-    v = 0; h = tolower(h)
-    for (i = 1; i <= length(h); i++) {
-        c = index("0123456789abcdef", substr(h, i, 1))
-        if (c == 0) return -1
-        v = v * 16 + c - 1
+# Decode HTML entities and drop zero-width characters. One linear pass:
+# pages can be megabytes of a single minified line.
+decode_entities() {
+    LC_ALL=C awk '
+    function hexval(h,    i, c, v) {
+        v = 0; h = tolower(h)
+        for (i = 1; i <= length(h); i++) {
+            c = index("0123456789abcdef", substr(h, i, 1))
+            if (c == 0) return -1
+            v = v * 16 + c - 1
+        }
+        return v
     }
-    return v
-}
-function decode(s,    out, ent, n) {
-    out = ""
-    while (match(s, /&#[xX]?[0-9a-fA-F]+;/)) {
-        ent = substr(s, RSTART, RLENGTH)
-        out = out substr(s, 1, RSTART - 1)
-        s = substr(s, RSTART + RLENGTH)
-        if (ent ~ /^&#[xX]/) n = hexval(substr(ent, 4, length(ent) - 4))
-        else if (ent ~ /^&#[0-9]+;$/) n = substr(ent, 3, length(ent) - 3) + 0
-        else n = -1
-        out = out ((n >= 32 && n < 127) ? sprintf("%c", n) : " ")
+    function chr(c) { return (c >= 32 && c < 127) ? sprintf("%c", c) : " " }
+    BEGIN {
+        # UTF-8 zero-width space/non-joiner/joiner, LRM/RLM, word joiner, BOM
+        zw[1] = sprintf("%c%c%c", 226, 128, 139); zw[2] = sprintf("%c%c%c", 226, 128, 140)
+        zw[3] = sprintf("%c%c%c", 226, 128, 141); zw[4] = sprintf("%c%c%c", 226, 128, 142)
+        zw[5] = sprintf("%c%c%c", 226, 128, 143); zw[6] = sprintf("%c%c%c", 226, 129, 160)
+        zw[7] = sprintf("%c%c%c", 239, 187, 191)
+        named["nbsp"] = " "; named["quot"] = "\""; named["apos"] = "\047"
+        named["lt"] = "<";   named["gt"] = ">";    named["amp"] = "&"
     }
-    s = out s
-    gsub(/&nbsp;/, " ", s); gsub(/&quot;/, "\"", s); gsub(/&apos;/, "'"'"'", s)
-    gsub(/&lt;/, "<", s);   gsub(/&gt;/, ">", s);    gsub(/&amp;/, "\\&", s)
-    return s
+    {
+        s = $0
+        for (i = 1; i <= 7; i++) gsub(zw[i], "", s)
+        n = split(s, part, "&")
+        printf "%s", part[1]
+        for (i = 2; i <= n; i++) {
+            x = part[i]
+            if (match(x, /^#[0-9]+;/))
+                printf "%s%s", chr(substr(x, 2, RLENGTH - 2) + 0), substr(x, RLENGTH + 1)
+            else if (match(x, /^#[xX][0-9a-fA-F]+;/))
+                printf "%s%s", chr(hexval(substr(x, 3, RLENGTH - 3))), substr(x, RLENGTH + 1)
+            else if (match(x, /^[a-z]+;/) && (substr(x, 1, RLENGTH - 1) in named))
+                printf "%s%s", named[substr(x, 1, RLENGTH - 1)], substr(x, RLENGTH + 1)
+            else
+                printf "&%s", x
+        }
+        printf "\n"
+    }'
 }
-BEGIN {
-    # UTF-8 zero-width space/non-joiner/joiner, LRM/RLM, word joiner, BOM
-    zw[1] = sprintf("%c%c%c", 226, 128, 139); zw[2] = sprintf("%c%c%c", 226, 128, 140)
-    zw[3] = sprintf("%c%c%c", 226, 128, 141); zw[4] = sprintf("%c%c%c", 226, 128, 142)
-    zw[5] = sprintf("%c%c%c", 226, 128, 143); zw[6] = sprintf("%c%c%c", 226, 129, 160)
-    zw[7] = sprintf("%c%c%c", 239, 187, 191)
-}
-{ buf = buf " " $0 }
-END {
-    for (i = 1; i <= 7; i++) gsub(zw[i], "", buf)
-    raw = decode(buf)
-    gsub(/[[:space:]]+/, " ", raw)
-    stripped = buf
-    gsub(/<[^>]*>/, " ", stripped)
-    stripped = decode(stripped)
-    gsub(/[[:space:]]+/, " ", stripped)
-    print raw
-    print stripped
-}' > "$text_file" || { echo "[pi-scan] normalisation failed" >&2; exit 2; }
+
+# Normalise stdin into two lines — raw text and tag-stripped text — with
+# whitespace collapsed to single spaces.
+LC_ALL=C tr '\r\n\t\f\v' '     ' > "$in_file" || { echo "[pi-scan] cannot read input" >&2; exit 2; }
+{
+    decode_entities < "$in_file"
+    LC_ALL=C sed 's/<[^>]*>/ /g' "$in_file" | decode_entities
+} | LC_ALL=C tr -s ' ' > "$text_file" || { echo "[pi-scan] normalisation failed" >&2; exit 2; }
 
 LC_ALL=C grep -Eiq -f "$pat_file" "$text_file"
 rc=$?
