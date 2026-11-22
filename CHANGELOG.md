@@ -19,7 +19,8 @@ All notable changes to AiVPN are documented here. The project follows
   host namespace and leaked DNS when the config had no `DNS =` line.
 - SOCKS5 only accepts connections from the Docker gateway by default
   (`SOCKS_ALLOW_FROM`), so neighbour containers cannot use it as an open proxy.
-  Optional `SOCKS_USER` / `SOCKS_PASS` auth.
+  Optional `SOCKS_USER` / `SOCKS_PASS` auth (passed by name, never in the
+  host's process list; microsocks blanks them in its own argv).
 - `scripts/smoke-test.sh` no longer runs the real daemon on the host (it could
   rewrite the host's `/etc/resolv.conf` and firewall when run as root with an
   existing `/etc/wireguard/wg0.conf`).
@@ -46,7 +47,9 @@ All notable changes to AiVPN are documented here. The project follows
   entities, zero-width characters, tags) before matching; patterns use
   bounded gaps instead of `.*` and the broad ones that blocked ordinary pages
   (e.g. "grandma", "no limits", "developer mode") were removed. Scanner errors
-  now fail closed (exit 2); HTTP errors and oversized responses
+  now fail closed (exit 2) and the scan is bounded by `PI_SCAN_TIMEOUT`;
+  normalisation is a linear pipeline (1 MB entity-heavy page: ~1 s); HTTP
+  errors and oversized responses
   (`SAFEFETCH_MAX_BYTES`) are fetch errors; `SAFEFETCH_MODE=warn` added.
   Documented as a heuristic tripwire rather than "prompt-injection-safe".
 - systemd unit uses `scripts/aivpn foreground` and an optional env file.

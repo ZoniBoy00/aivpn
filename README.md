@@ -307,6 +307,7 @@ with a warning on stderr instead of withholding it.
 | `SAFEFETCH_TIMEOUT` | `30` | Fetch timeout (s) |
 | `SAFEFETCH_MAX_BYTES` | `10485760` | Max response size |
 | `SAFEFETCH_MODE` | `block` | `block` or `warn` |
+| `PI_SCAN_TIMEOUT` | `60` | Max seconds for the scan (timeout = scanner error) |
 | `AIVPN_HOST_PORT` | `1080` | Host port used by the wrapper / compose |
 | `FORCE_USERSPACE_WG` | `0` | Force `wireguard-go` (testing) |
 
