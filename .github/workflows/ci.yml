@@ -41,6 +41,14 @@ jobs:
       - name: version
         run: docker run --rm aivpn:ci version
 
+      # The local smoke tests ran on GNU tools; the image uses busybox + musl.
+      # Run them again inside the image, against the pattern file it ships.
+      - name: smoke tests inside the image (busybox awk/sed/grep)
+        run: >
+          docker run --rm -v "$PWD:/src:ro"
+          -e PI_PATTERNS=/usr/local/share/aivpn/pi-patterns.txt
+          --entrypoint bash aivpn:ci /src/scripts/smoke-test.sh
+
       - name: start container with a dead endpoint
         run: |
           set -eu
@@ -86,27 +94,36 @@ jobs:
         run: |
           gw=$(docker exec ks sh -c "ip route show 192.0.2.1 | awk '{print \$3}'")
           docker exec ks ip route add 1.1.1.1/32 via "$gw" dev eth0
-          ! docker exec ks curl -sS -m 5 http://1.1.1.1
+          if docker exec ks curl -sS -m 5 http://1.1.1.1; then
+            echo "egress around the tunnel succeeded — kill switch broken"; exit 1
+          fi
 
-      - name: no IPv6 egress
-        run: "! docker exec ks curl -g -6 -sS -m 5 http://[2606:4700:4700::1111]/"
+      # Runners have no IPv6 egress, so a failing curl alone proves nothing:
+      # assert the block itself is in place.
+      - name: IPv6 blocked
+        run: |
+          set -eu
+          docker logs ks 2>&1 | grep -q 'IPv6 blocked'
+          docker exec ks ip6tables -S | grep -qx -- '-P OUTPUT DROP'
+          if docker exec ks curl -g -6 -sS -m 5 http://[2606:4700:4700::1111]/; then exit 1; fi
 
       - name: no Docker embedded DNS
         run: "! docker exec ks timeout 8 nslookup example.com 127.0.0.11"
 
-      # Probe: ask microsocks to CONNECT to itself (127.0.0.1:1080 inside the
-      # container, allowed via lo). An allowed client gets the SOCKS tunnel and
-      # then an empty reply (curl exit 52); a blocked client never gets past
-      # the SOCKS handshake.
-      - name: SOCKS5 usable from the host, blocked for neighbour containers
+      # Direct TCP connects to the container IP (not the published port, where
+      # docker-proxy would accept the connection itself). From the runner the
+      # source address is the bridge gateway, which is allowed; a neighbour
+      # container on the same network must be dropped.
+      - name: SOCKS5 open to the gateway, closed to neighbour containers
         run: |
-          set +e -u  # exit codes are checked explicitly
-          port=$(docker port ks 1080/tcp | head -1 | sed -E 's/.*://')
-          curl -sS -m 5 --socks5 "127.0.0.1:$port" http://127.0.0.1:1080/; rc=$?
-          echo "host rc=$rc"; [ "$rc" -eq 52 ] || exit 1
+          set -eu
           ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ks)
-          docker run --rm --network aivpn-ci-v6 curlimages/curl:8.10.1 -sS -m 5 --socks5 "$ip:1080" http://127.0.0.1:1080/; rc=$?
-          echo "neighbour rc=$rc"; [ "$rc" -ne 52 ] && [ "$rc" -ne 0 ] || exit 1
+          timeout 5 bash -c "exec 3<>/dev/tcp/$ip/1080"
+          echo "gateway → $ip:1080 connected"
+          if docker run --rm --network aivpn-ci-v6 --entrypoint bash aivpn:ci               -c "timeout 5 bash -c 'exec 3<>/dev/tcp/$ip/1080'"; then
+            echo "neighbour container reached SOCKS5 — access control broken"; exit 1
+          fi
+          echo "neighbour → $ip:1080 blocked"
 
       - name: cleanup
         if: always()

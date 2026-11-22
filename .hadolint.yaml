@@ -1,3 +1,5 @@
+# Fail CI on warnings and errors; info/style findings are reported only.
+failure-threshold: warning
 # Alpine packages are pinned through the base image digest instead.
 ignored:
   - DL3018
