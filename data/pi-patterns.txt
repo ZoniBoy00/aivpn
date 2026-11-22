@@ -1,29 +1,35 @@
 # AiVPN — prompt injection heuristic patterns
-# One extended-regex pattern per line. Case-insensitive.
-# Curated from public PI research (OWASP LLM Top 10, academic datasets).
-# Lines starting with # are comments.
+# One POSIX extended-regex pattern per line, matched case-insensitively against
+# normalised text (whitespace collapsed, HTML entities decoded). Lines starting
+# with # are comments.
+#
+# Rules for new patterns:
+#   - Pages are scanned as ONE long line, so never use an unbounded `.*` —
+#     use a bounded gap like `.{0,40}` or the pattern will match across a page.
+#   - No \b, \w or \s: the image uses musl regex (POSIX ERE only).
+#   - Prefer phrases aimed at a model ("your system prompt") over single
+#     words ("jailbreak", "developer mode") that appear in ordinary pages.
+#   - Add a false-positive and a true-positive case to scripts/smoke-test.sh.
 
-# Instruction override / hierarchy
-ignore (all|any|the|previous|prior|above|earlier).*(instruction|instructions|prompt|prompts|rules)
-(disregard|forget|forget all|ignore).*(previous|prior|above|earlier|system).*(instruction|instructions|prompt|rules)
-(you are now|from now on you are|act as if you are|pretend you are).*(unrestricted|no rules|without rules)
-override (all|any|previous|system).*(instruction|instructions|prompt|rules)
-instruction[s]? (above|below|in this).*(override|supersede|take precedence)
-system (prompt|instruction|message).*(reveal|show|print|leak|give)
-reveal (your|the).*(system prompt|instructions|instructions in full)
-(print|show|display|repeat|output).*(the system prompt|your instructions|initial prompt)
+# Instruction override
+(ignore|disregard|forget|override)( all| any| the| your)?( of)?( the)?( previous| prior| above| earlier| preceding| system)+ (instructions?|prompts?|rules|directives|guidelines)
+(ignore|disregard|forget) (all|everything) (you were|you have been|you've been) (told|instructed|given)
+instructions? (above|below) .{0,30}(override|supersede|take precedence)
+(from now on|you are now),? you (are|will be|will act as) .{0,40}(unrestricted|unfiltered|uncensored|jailbroken|without (any )?(rules|restrictions|limits|filters))
+
+# System prompt extraction
+(reveal|print|show|display|repeat|output|leak|dump) .{0,20}(your|the) (full |entire |hidden |original )?(system prompt|initial prompt|hidden instructions|original instructions)
+(what is|what are|tell me) .{0,10}your (system prompt|initial prompt|hidden instructions)
 
 # Safety bypass
-(disable|bypass|turn off|remove).*(safety|guardrail|filter|restriction|moderation|content policy)
-(you|the ai|model).*(have no (restrictions|limits|guardrails))
-(no (rules|restrictions|limits|filter)|without (rules|restrictions|filters))
-(jailbreak|do anything now|d.a.n|grandma|developer mode|god mode)
-(simulate|pretend).*(jailbreak|unfiltered|uncensored)
+(disable|bypass|ignore|turn off) .{0,20}(your|all|the) (safety|guardrails?|content polic(y|ies)|moderation|ethical guidelines)
+(you|the ai|the assistant|the model) (have|has|now have|now has) no (restrictions|limits|guardrails|rules|filters)
+(enable|enter|activate|switch to) .{0,15}(jailbreak|unfiltered|uncensored|dan) mode
+(pretend|act as if|imagine) (you are|you're|to be) .{0,30}(unrestricted|unfiltered|uncensored|jailbroken|without (rules|restrictions))
 
-# Role assumption
-(act as|pretend to be|you are).*(another|different).*(ai|model|assistant|bot)
-(ignore your|disregard your).*(programming|training|original|core).*(instructions|purpose)
+# Role / agent hijack
+(ignore|disregard) your (programming|training|original|core) (instructions|purpose|directives)
+(attention|note to|message for|instructions for) (the )?(ai|llm|assistant|agent|language model)s?[:,] .{0,40}(ignore|disregard|forget|do not|don't|instead)
 
-# Extraction attempts
-(what are|list|reveal).*(your|the).*(system prompt|initial prompt|programming instructions)
-(how do you|what are).*(your).*(instructions|prompt|system)
+# Data exfiltration aimed at an agent
+(assistant|agent|ai|model|llm)[^.]{0,60}(send|post|upload|forward|exfiltrate|leak)[^.]{0,40}(api keys?|credentials|secrets?|tokens?|private keys?|environment variables|passwords?)
