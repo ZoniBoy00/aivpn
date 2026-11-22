@@ -39,6 +39,12 @@ location_config() {
   local config="$ROOT_DIR/config/${location}.conf"
   [[ -f "$config" ]] || { echo "Missing config: $config (see ./scripts/setup.sh --location $location)" >&2; exit 2; }
   [[ "$(stat -c '%a' "$config")" == "600" ]] || { echo "Config must be mode 600: chmod 600 $config" >&2; exit 2; }
+  # The container runs without CAP_DAC_OVERRIDE: its root can only read a
+  # mode-600 file it owns (uid 0, or your uid under rootless Docker).
+  if [[ "$(stat -c '%u' "$config")" != "0" ]] && ! docker info -f '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+    echo "Config must be owned by root (the hardened container cannot read it otherwise): sudo chown root:root $config" >&2
+    exit 2
+  fi
   printf '%s\n' "$config"
 }
 

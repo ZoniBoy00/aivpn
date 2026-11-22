@@ -67,6 +67,7 @@ jobs:
           Endpoint = 192.0.2.1:51820
           EOF
           chmod 600 ci/wg0.conf
+          sudo chown root:root ci/wg0.conf
           docker network create --ipv6 --subnet fd00:a1:1::/64 aivpn-ci-v6
           docker run -d --name ks --network aivpn-ci-v6 \
             --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \

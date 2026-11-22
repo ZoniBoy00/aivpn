@@ -93,6 +93,10 @@ if [ "$MODE" != "build-only" ]; then
         (umask 077 && tr -d '\r' < "$CONFIG_SRC" > "$CONFIG_DEST")
         chmod 600 "$CONFIG_DEST"
         echo_info "Config provisioned → $CONFIG_DEST (mode 600)"
+        if [ "$(id -u)" -ne 0 ]; then
+            echo_info "The hardened container can only read a mode-600 config owned by root:"
+            echo_info "  sudo chown root:root $CONFIG_DEST     (not needed with rootless Docker)"
+        fi
     fi
 fi
 

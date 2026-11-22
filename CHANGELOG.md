@@ -37,6 +37,9 @@ All notable changes to AiVPN are documented here. The project follows
   prints the real published port.
 - MTU is read from the config (default 1420); all IPv4 `Address` entries are
   applied; endpoint parsing is shared and handles hostnames.
+- A mode-600 config owned by a non-root user was unreadable for the hardened
+  container (no `CAP_DAC_OVERRIDE`) and failed obscurely; the entrypoint, the
+  wrapper and `setup.sh` now explain the fix (`chown root:root`).
 - `wireguard-go` runs in the foreground so its PID can be supervised.
 - `docker exec <name> safefetch <url>` works (symlink in the image).
 - Line endings forced to LF for every file — a Windows checkout previously

@@ -139,6 +139,7 @@ it** (`*.conf` is git-ignored).
 mkdir -p config
 cp ~/Downloads/Hermes-Agent-FI.conf config/fi.conf
 chmod 600 config/fi.conf
+sudo chown root:root config/fi.conf   # the hardened container reads it as root
 ```
 
 > Use Proton's file as-is. You do **not** need to change `Address` / `DNS`
@@ -326,6 +327,7 @@ with a warning on stderr instead of withholding it.
 
 | Symptom | Cause / fix |
 |---|---|
+| `config ... is not readable` | The container has no `CAP_DAC_OVERRIDE`: a mode-600 config must be owned by root → `sudo chown root:root config/*.conf` |
 | `Exited(1)` / tunnel won't come up | Wrong/expired key, server down → `docker logs aivpn-<location>` |
 | `no IPv4 DNS server in the config` | Add `DNS = 10.2.0.1` to the config or set `TUNNEL_DNS` |
 | `cannot block IPv6` | Run with `--sysctl net.ipv6.conf.all.disable_ipv6=1` (the wrapper and compose do this) |

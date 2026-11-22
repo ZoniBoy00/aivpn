@@ -12,6 +12,10 @@ Common causes:
 - **Wrong/expired key or server down** — Proton WireGuard configs are valid
   ~1 year (expiry shown on account.protonvpn.com/downloads). Generate a fresh
   one and remount it.
+- **`config ... is not readable`** — the container drops all capabilities
+  except `NET_ADMIN`, so its root cannot read a mode-600 file owned by another
+  user. `sudo chown root:root config/<location>.conf` (with rootless Docker,
+  keep it owned by your user).
 - **`no IPv4 DNS server in the config`** — AiVPN refuses to fall back to
   Docker's resolver (it would leak DNS). Add `DNS = 10.2.0.1` or set
   `TUNNEL_DNS`.

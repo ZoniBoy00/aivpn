@@ -107,7 +107,9 @@ conf_value() {
 
 parse_config() {
     [ -f "$WG_CONF" ] || die "WireGuard config not found at $WG_CONF (mount it read-only: -v \$(pwd)/config/wg0.conf:$WG_CONF:ro)"
-    [ -r "$WG_CONF" ] || die "WireGuard config at $WG_CONF is not readable"
+    # With --cap-drop=ALL the container's root has no CAP_DAC_OVERRIDE, so a
+    # mode-600 file owned by another host user cannot be read.
+    [ -r "$WG_CONF" ] || die "WireGuard config at $WG_CONF is not readable — on the host run: sudo chown root:root <config> (mode 600 files must be owned by root; rootless Docker: by your user)"
 
     local ep ep_host entry
     ep=$(conf_value Endpoint)
