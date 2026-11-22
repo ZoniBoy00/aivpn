@@ -1,8 +1,7 @@
-# Normalize line endings across platforms
-* text=auto
+# Everything in this repo runs on Linux (container, host scripts, systemd).
+# Force LF on every platform: a CRLF checkout on Windows breaks shebangs and
+# ships a pi-patterns.txt whose patterns never match.
+* text=auto eol=lf
 
-# Shell scripts MUST stay LF — CRLF breaks shebang/exec in Linux containers
-*.sh text eol=lf
-Dockerfile text eol=lf
-Makefile text eol=lf
-.gitignore text eol=lf
+*.png binary
+*.jpg binary
