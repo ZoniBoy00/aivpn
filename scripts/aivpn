@@ -64,7 +64,9 @@ run_flags() {
     -e HEALTH_INTERVAL="${HEALTH_INTERVAL:-60}" \
     -e HEALTHCHECK_URL="${HEALTHCHECK_URL:-https://api.ipify.org}" \
     -e SOCKS_ALLOW_FROM="${SOCKS_ALLOW_FROM:-gateway}"
-  [[ -z "${SOCKS_USER:-}" ]] || printf '%s\n' -e SOCKS_USER="$SOCKS_USER" -e SOCKS_PASS="${SOCKS_PASS:-}"
+  # Name only: docker reads the values from this environment, so the
+  # credentials never appear in the host's process list.
+  [[ -z "${SOCKS_USER:-}" ]] || { export SOCKS_USER SOCKS_PASS="${SOCKS_PASS:-}"; printf '%s\n' -e SOCKS_USER -e SOCKS_PASS; }
   [[ -z "${TUNNEL_DNS:-}" ]] || printf '%s\n' -e TUNNEL_DNS="$TUNNEL_DNS"
   ipv6_flags
 }
