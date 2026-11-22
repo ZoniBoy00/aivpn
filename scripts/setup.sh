@@ -2,27 +2,30 @@
 # ============================================================================
 #  AiVPN — setup.sh
 # ----------------------------------------------------------------------------
-#  One-time setup: validates prerequisites, provisions the Proton WireGuard
-#  config and builds the image.
+#  One-time setup: validates prerequisites, provisions a Proton WireGuard
+#  config as config/<location>.conf and builds the image.
 #
 #  Usage:
-#    ./scripts/setup.sh              interactive (asks for config path)
-#    ./scripts/setup.sh --config path/to/proton-wg.conf
-#    ./scripts/setup.sh --build-only  (skip config provisioning)
+#    ./scripts/setup.sh                                  interactive (location "fi")
+#    ./scripts/setup.sh --location us                    interactive, config/us.conf
+#    ./scripts/setup.sh --location us --config path/to/proton-wg.conf
+#    ./scripts/setup.sh --build-only                     skip config provisioning
 # ============================================================================
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_DEST="$ROOT/config/wg0.conf"
-IMAGE_NAME="${AIVPN_IMAGE:-aivpn}"
+IMAGE_NAME="${AIVPN_IMAGE:-aivpn:latest}"
 MODE="interactive"
 CONFIG_SRC=""
+LOCATION="fi"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --config)   shift; CONFIG_SRC="${1:-}"; MODE="noninteractive" ;;
+        --config)     shift; CONFIG_SRC="${1:-}"; MODE="noninteractive" ;;
+        --location)   shift; LOCATION="${1:-}" ;;
         --build-only) MODE="build-only" ;;
+        -h|--help)    sed -n '2,13p' "$0"; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
     shift
@@ -43,6 +46,12 @@ EOF
 echo_info() { echo "[setup] $*"; }
 echo_err()  { echo "[setup][error] $*" >&2; }
 
+[[ "$LOCATION" =~ ^[a-z0-9_-]+$ ]] || { echo_err "invalid --location '$LOCATION' (use a-z, 0-9, _ and -)"; exit 1; }
+CONFIG_DEST="$ROOT/config/${LOCATION}.conf"
+
+banner
+echo
+
 # --- Prerequisites -----------------------------------------------------------
 
 command -v docker >/dev/null 2>&1 || { echo_err "docker not found in PATH"; exit 1; }
@@ -55,10 +64,9 @@ if [ "$MODE" != "build-only" ]; then
         echo_info "Config already exists at $CONFIG_DEST — keeping it."
         echo_info "Delete it and re-run to re-provision."
     else
-        echo
         echo "┌──────────────────────────────────────────────────────────────────┐"
-        echo "│  1. Sign in at  https://account.protonvpn.com                    │"
-        echo "│  2. Go to  Downloads → WireGuard configuration                   │"
+        echo "│  1. Sign in at  https://account.protonvpn.com/downloads          │"
+        echo "│  2. WireGuard configuration → Create config (GNU/Linux)          │"
         echo "│  3. Pick a server + options, download the .conf file             │"
         echo "└──────────────────────────────────────────────────────────────────┘"
         echo
@@ -74,14 +82,21 @@ if [ "$MODE" != "build-only" ]; then
 
         # Sanity checks on the config before accepting it
         grep -q '^\[Interface\]' "$CONFIG_SRC" || { echo_err "not a WireGuard config (no [Interface])"; exit 1; }
-        grep -q 'PrivateKey' "$CONFIG_SRC"    || { echo_err "config has no PrivateKey — did Proton generate it?"; exit 1; }
-        grep -q '^\[Peer\]' "$CONFIG_SRC"     || { echo_err "config has no [Peer] section"; exit 1; }
-        grep -q '^PrivateKey = ' "$CONFIG_SRC" && echo_err "!! config still contains a placeholder PrivateKey" || true
+        grep -q '^\[Peer\]' "$CONFIG_SRC"      || { echo_err "config has no [Peer] section"; exit 1; }
+        grep -Eq '^PrivateKey[[:space:]]*=[[:space:]]*[A-Za-z0-9+/]{42,43}=' "$CONFIG_SRC" \
+            || { echo_err "config has no valid PrivateKey — did Proton generate it?"; exit 1; }
+        grep -q 'REPLACE_WITH' "$CONFIG_SRC" && { echo_err "config still contains REPLACE_WITH placeholders"; exit 1; }
+        grep -Eq '^Endpoint[[:space:]]*=' "$CONFIG_SRC" || { echo_err "config has no Endpoint"; exit 1; }
+        grep -Eq '^DNS[[:space:]]*=' "$CONFIG_SRC" || { echo_err "config has no DNS line (AiVPN refuses to run without tunnel DNS)"; exit 1; }
 
         mkdir -p "$ROOT/config"
-        umask 077
-        cp "$CONFIG_SRC" "$CONFIG_DEST"
-        echo_info "Config provisioned → $CONFIG_DEST (chmod 600 recommended: chmod 600 $CONFIG_DEST)"
+        (umask 077 && tr -d '\r' < "$CONFIG_SRC" > "$CONFIG_DEST")
+        chmod 600 "$CONFIG_DEST"
+        echo_info "Config provisioned → $CONFIG_DEST (mode 600)"
+        if [ "$(id -u)" -ne 0 ]; then
+            echo_info "The hardened container can only read a mode-600 config owned by root:"
+            echo_info "  sudo chown root:root $CONFIG_DEST     (not needed with rootless Docker)"
+        fi
     fi
 fi
 
@@ -93,11 +108,7 @@ docker build -t "$IMAGE_NAME" "$ROOT"
 echo
 echo "✓ Setup complete!"
 echo
-echo "  Start the relay:"
-echo "    docker run -d --name vpn-proton --cap-add=NET_ADMIN --device=/dev/net/tun \\"
-echo "      -v $CONFIG_DEST:/etc/wireguard/wg0.conf:ro \\"
-echo "      -p 127.0.0.1::1080 \\"
-echo "      $IMAGE_NAME daemon"
-echo
-echo "  Test it:"
-echo "    docker exec vpn-proton curl -s https://ip-api.com/json"
+echo "  Start the relay:   ./scripts/aivpn up $LOCATION      (or: make up LOCATION=$LOCATION)"
+echo "  Wait for tunnel:   ./scripts/aivpn wait"
+echo "  Check egress IP:   ./scripts/aivpn ip"
+echo "  SOCKS5 endpoint:   ./scripts/aivpn socks"

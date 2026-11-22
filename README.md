@@ -21,18 +21,21 @@ goes through the VPN; the host network is never touched.**
 ## 📋 Table of Contents
 
 - [What is this](#-what-is-this)
-- [Architecture](#-architecture)
+- [Architecture](#️-architecture)
 - [Requirements](#-requirements)
-- [Creating a Proton WireGuard config](#-creating-a-proton-wireguard-config)
+- [Creating a Proton WireGuard config](#️-creating-a-proton-wireguard-config)
 - [Installation](#-installation)
 - [Usage](#-usage)
   - [Starting the container](#starting-the-container)
   - [Commands](#commands)
   - [Browser through VPN (SOCKS5)](#browser-through-vpn-socks5)
   - [Multiple locations](#multiple-locations)
-- [Security](#-security)
-- [Limitations](#-limitations)
+  - [systemd supervision](#systemd-supervision)
+- [Security](#️-security)
+- [Configuration](#️-configuration)
+- [Limitations](#️-limitations)
 - [Troubleshooting](#-troubleshooting)
+- [Development](#-development)
 - [Support this project](#-support-this-project)
 - [License & credits](#-license--credits)
 
@@ -50,9 +53,10 @@ Use cases:
 
 - 🤖 An AI agent fetches content **from another country** (pricing, availability,
   region-locked data)
-- 🔀 **Parallel comparison**: run multiple locations side by side
-- 🕵️ **Anonymous browsing** without putting the host behind a VPN
-- 🛡️ **Prompt-injection-safe fetching** for agents (`safefetch`)
+- 🔀 **Comparing locations**: switch between exit countries, or run several
+  containers side by side
+- 🕵️ **Private browsing** without putting the host behind a VPN
+- 🛡️ **Heuristic prompt-injection tripwire** for agent fetches (`safefetch`)
 
 ## 🏗️ Architecture
 
@@ -61,7 +65,7 @@ Use cases:
 │                      HOST (VPS / homelab)                   │
 │                                                             │
 │   ┌───────────────────────────┐                             │
-│   │   vpn-proton (container)  │                             │
+│   │   aivpn-fi (container)    │                             │
 │   │                           │    WireGuard tunnel         │
 │   │   ┌───────────────┐       │ ──────────────────────────► │
 │   │   │  WireGuard    │       │         Proton VPN          │
@@ -69,16 +73,16 @@ Use cases:
 │   │   └──────┬────────┘       │                             │
 │   │          │                │                             │
 │   │   ┌──────▼────────┐       │                             │
-│   │   │  microsocks   │◄──────│── SOCKS5 :1080              │
-│   │   │  (SOCKS5)     │       │  (dynamic host port)        │
+│   │   │  microsocks   │◄──────│── SOCKS5 127.0.0.1:1080     │
+│   │   │  (SOCKS5)     │       │                             │
 │   │   └──────┬────────┘       │                             │
 │   │   ┌──────▼────────┐       │                             │
-│   │   │  iptables     │       │  kill switch: never leaks   │
-│   │   │  kill switch  │       │  to host network            │
-│   │   └───────────────┘       │                             │
+│   │   │  iptables +   │       │  kill switch: installed     │
+│   │   │  ip6tables    │       │  before the tunnel, never   │
+│   │   └───────────────┘       │  relaxed                    │
 │   └───────────────────────────┘                             │
 │                                                             │
-│   docker exec vpn-proton curl ...  ← goes through tunnel     │
+│   docker exec aivpn-fi curl ...  ← goes through tunnel      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,18 +90,18 @@ Use cases:
 
 | Component | Role |
 |---|---|
-| `wg` / `ip` | Manual tunnel bring-up (`wg setconf` + `ip route`) — no wg-quick dependency |
-| `wg-quick` | Config stripping only (`wg-quick strip` feeds `wg setconf`) |
-| `wireguard-go` | Userspace WireGuard, installed in the image (not used by the manual bring-up) |
+| `wg` / `ip` | Manual tunnel bring-up (`wg setconf` + `ip route`) — no wg-quick at runtime |
+| `wireguard-go` | Userspace WireGuard, used automatically when the host kernel has no WireGuard module |
 | `microsocks` | SOCKS5 proxy inside the container (port 1080) |
-| `iptables` | Kill switch: all egress except through the tunnel = DROP |
-| `pi-scan.sh` | Prompt-injection scanner for the `safefetch` command |
+| `iptables` / `ip6tables` | Kill switch: all IPv4 egress except the tunnel = DROP, all IPv6 = DROP |
+| `pi-scan.sh` | Heuristic prompt-injection scanner behind the `safefetch` command |
+| `scripts/aivpn` | Host wrapper: start/stop, status, tests, SOCKS endpoint |
 
 ## ✅ Requirements
 
-- **Docker** on a Linux host
+- **Docker** on a Linux host (Docker Compose v2 for `aivpn up`)
 - **Proton VPN account** ([protonvpn.com](https://protonvpn.com)) — Unlimited recommended
-- Host kernel or userspace: `/dev/net/tun` and `--cap-add=NET_ADMIN` (the container handles the rest)
+- `/dev/net/tun` and `--cap-add=NET_ADMIN` (the container handles the rest)
 
 ## 🛠️ Creating a Proton WireGuard config
 
@@ -120,201 +124,232 @@ Click **Create config** and fill in:
 - **VPN options** — enable **VPN Accelerator** (NetShield / Moderate NAT are
   fixed at generation time, not switchable at runtime)
 - **Server** — pick a location; the UI recommends the lowest-load server
-  (e.g. `FI#72`) and lists countries alphabetically (Afghanistan, Netherlands, …)
+  (e.g. `FI#72`) and lists countries alphabetically
 
 **3. Download**
 
-Download the `.conf`, save it as `config/wg0.conf` (or one file per location,
-e.g. `config/us.conf`) and `chmod 600` it. The config contains your private
-key — **never commit it, never `docker push` an image with it**.
+Download the `.conf` and save it as `config/<location>.conf` — the location
+name is what you pass to `aivpn up`, e.g. `config/fi.conf`, `config/us.conf`.
+The config contains your private key — **keep it `chmod 600` and never commit
+it** (`*.conf` is git-ignored).
 
 ```bash
+./scripts/setup.sh --location fi --config ~/Downloads/Hermes-Agent-FI.conf
+# or by hand:
 mkdir -p config
-cp ~/Downloads/Hermes-Agent-FI.conf config/wg0.conf
-chmod 600 config/wg0.conf
+cp ~/Downloads/Hermes-Agent-FI.conf config/fi.conf
+chmod 600 config/fi.conf
+sudo chown root:root config/fi.conf   # the hardened container reads it as root
 ```
 
-> One container = one location. For more countries, create another config on
-> the same page (each counts toward the Proton 10-device limit) and mount it
-> under a different container name — see [Multiple locations](#multiple-locations).
+> Use Proton's file as-is. You do **not** need to change `Address` / `DNS`
+> lines for additional locations — each container has its own network
+> namespace. Each config counts toward Proton's 10-device limit.
 
 ## 🔧 Installation
 
 ```bash
-# 1. Create the WireGuard config — see "Creating a Proton WireGuard config" above
-# 2. Run setup (asks for the config path + builds the image)
-./scripts/setup.sh
+# 1. Create the WireGuard config — see above
+# 2. Validate + copy the config and build the image
+./scripts/setup.sh --location fi            # asks for the .conf path
+# or: make setup LOCATION=fi
 
-#   Or manually:
-mkdir -p config && cp /path/to/proton-wg.conf config/wg0.conf
-chmod 600 config/wg0.conf
-docker build -t aivpn .
+# 3. Optional: put the wrapper on your PATH
+sudo ln -sfn "$(pwd)/scripts/aivpn" /usr/local/bin/aivpn
 ```
 
 ## 🚀 Usage
 
-> **Local test without Docker:** `bash scripts/smoke-test.sh` — verifies the
-> entrypoint, banner, error handling and the PI scanner (7 tests).
+> **Local test without Docker:** `bash scripts/smoke-test.sh` (or `make smoke`)
+> — syntax, security wiring, entrypoint error handling and the PI scanner.
+> It never touches the host network.
 
 ### Starting the container
 
 ```bash
-# The easy way (Makefile)
-make up LOCATION=proton
+# The easy way (wrapper / Makefile) — container name: aivpn-<location>
+./scripts/aivpn up fi          # or: make up LOCATION=fi
+./scripts/aivpn wait           # blocks until the tunnel is up
 
 # Or directly with Docker
-docker run -d --name vpn-proton \
-  --cap-add=NET_ADMIN --device=/dev/net/tun \
-  -v $(pwd)/config/wg0.conf:/etc/wireguard/wg0.conf:ro \
+docker run -d --name aivpn-fi \
+  --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \
+  --device=/dev/net/tun \
+  --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+  -v "$(pwd)/config/fi.conf:/etc/wireguard/wg0.conf:ro" \
   -p 127.0.0.1::1080 \
-  aivpn daemon
-
-# Wait until the tunnel is up (fail-fast check)
-./scripts/wait-for-vpn.sh vpn-proton
+  aivpn:latest daemon
+./scripts/wait-for-vpn.sh aivpn-fi
 ```
 
 ### Commands
 
 ```bash
-# Verify traffic goes through the tunnel
-docker exec vpn-proton curl -s https://ip-api.com/json
+# Wrapper (host side)
+aivpn status                 # container, tunnel, handshake, egress IP
+aivpn ip                     # egress IP
+aivpn socks                  # socks5h://127.0.0.1:<port>
+aivpn test fi                # tunnel + SOCKS5 smoke test for one location
+aivpn test-all               # every config/*.conf
+aivpn logs
+aivpn down                   # stop + remove the managed container
 
-# Status + egress IP
-docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh status
+# Inside the container
+docker exec aivpn-fi curl -s https://ip-api.com/json
+docker exec aivpn-fi /usr/local/bin/docker-entrypoint.sh status
 
-# One-shot: connect → print IP → exit
-docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh connect
-
-# AI-agent safe fetch (prompt-injection scanning)
-#   0 = clean, 77 = PI detected (content blocked), 1 = fetch error
-docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh safefetch https://example.com/api/data
-
-# Plain curl through the tunnel
-docker exec vpn-proton curl -s -m 20 -A "Mozilla/5.0" https://example.com
-
-# Clean shutdown
-docker exec vpn-proton /usr/local/bin/docker-entrypoint.sh stop
-# or
-docker stop vpn-proton && docker rm vpn-proton
+# Agent fetch with a heuristic prompt-injection scan
+#   0 = clean, 77 = possible injection (content withheld),
+#   1 = fetch error (HTTP error / timeout / too large), 2 = scanner error
+docker exec aivpn-fi safefetch https://example.com/api/data
 ```
 
-### systemd supervision
-
-For a persistent host installation, use the included template unit instead of
-running `docker run` manually. The config for a location must be available as
-`/opt/aivpn/config/<location>.conf`.
-
-```bash
-sudo install -m 0644 systemd/aivpn@.service /etc/systemd/system/aivpn@.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now aivpn@fi.service
-sudo systemctl status aivpn@fi.service
-```
-
-The unit restarts the container after a Docker or process failure. The
-container's own reconnect loop still handles ordinary WireGuard interruptions.
+**Stopping:** use `aivpn down` or `docker stop <name>`. The in-container
+`stop` command only signals the daemon; with a restart policy (compose,
+systemd) Docker starts it again.
 
 ### Browser through VPN (SOCKS5)
 
 ```bash
-# Get the container's dynamic host port
-SOCKS_PORT=$(docker port vpn-proton 1080 | head -1 | awk -F: '{print $NF}')
-echo "SOCKS5: 127.0.0.1:$SOCKS_PORT"
+SOCKS_PORT=$(docker port aivpn-fi 1080/tcp | head -1 | awk -F: '{print $NF}')
 
 # Chrome with a dedicated profile + leak protection
 google-chrome \
-  --user-data-dir="$HOME/.config/google-chrome/vpn-proton" \
+  --user-data-dir="$HOME/.config/google-chrome/aivpn-fi" \
   --proxy-server="socks5://127.0.0.1:$SOCKS_PORT" \
   --host-resolver-rules="MAP * ~NOTFOUND , EXCLUDE 127.0.0.1" \
   --disable-quic \
   --webrtc-ip-handling-policy=disable_non_proxied_udp
 
-# Or curl with SOCKS support (from the host)
-curl --socks5-hostname 127.0.0.1:$SOCKS_PORT https://ip-api.com/json
+# curl from the host (socks5-hostname = DNS through the tunnel too)
+curl --socks5-hostname "127.0.0.1:$SOCKS_PORT" https://ip-api.com/json
 ```
 
 ### Multiple locations
 
+The wrapper keeps **one active location** on `localhost:1080`; `aivpn up us`
+replaces `aivpn-fi`. `aivpn test <location>` checks other locations in a
+temporary container on a random port without touching the active one.
+
+To run several locations side by side, start extra containers yourself with a
+random host port:
+
 ```bash
-# Download another config for a different location (e.g. Tokyo)
-#   NOTE: per Proton's guide, change the Address/DNS lines:
-#   Address = 10.3.0.2/32, DNS = 10.3.0.1 (bump 10.2 → 10.3 → 10.4 ...)
-
-docker run -d --name vpn-tokyo \
-  --cap-add=NET_ADMIN --device=/dev/net/tun \
-  -v $(pwd)/config/tokyo.conf:/etc/wireguard/wg0.conf:ro \
+docker run -d --name vpn-jp \
+  --cap-drop=ALL --cap-add=NET_ADMIN --security-opt=no-new-privileges:true \
+  --device=/dev/net/tun --sysctl net.ipv6.conf.all.disable_ipv6=1 \
+  -v "$(pwd)/config/jp.conf:/etc/wireguard/wg0.conf:ro" \
   -p 127.0.0.1::1080 \
-  aivpn daemon
-
-./scripts/wait-for-vpn.sh vpn-tokyo
-docker exec vpn-tokyo curl -s https://ip-api.com/json
+  aivpn:latest daemon
+./scripts/wait-for-vpn.sh vpn-jp
 ```
+
+Never run the **same** config in two containers at once — both peers share one
+key and will keep knocking each other off.
+
+### systemd supervision
+
+```bash
+sudo cp -r . /opt/aivpn            # configs in /opt/aivpn/config/<location>.conf
+sudo install -m 0644 systemd/aivpn@.service /etc/systemd/system/aivpn@.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now aivpn@fi.service
+```
+
+The unit runs `scripts/aivpn foreground <location>` and restarts the container
+after a Docker or process failure; the container's own reconnect loop handles
+ordinary WireGuard interruptions. **One instance at a time** (they share
+`localhost:1080`). Optional overrides go in `/opt/aivpn/aivpn.env`.
 
 ## 🛡️ Security
 
-- **Kill switch (iptables):** while the tunnel is up, all egress except `wg0`
-  traffic, the WireGuard endpoint and the tunnel DNS is DROP. If the tunnel
-  drops, the container goes dark — **never a fallback to the host network.**
-- **DNS leak protection:** port 53 is only allowed to the tunnel's DNS server.
-  A hardcoded external resolver cannot work from inside the container.
-- **microsocks starts only after the tunnel** — SOCKS5 cannot leak before the
-  tunnel exists.
-- **SOCKS5 bound to the `127.0.0.1` host port** (`-p 127.0.0.1::1080`) — not
-  reachable from your LAN.
-- **Userspace fallback:** if the host kernel lacks WireGuard, AiVPN starts the
-  bundled `wireguard-go` backend. Set `FORCE_USERSPACE_WG=1` to test this path.
+- **Kill switch, fail-closed:** the IPv4 firewall is installed **before** the
+  tunnel exists and stays in place during reconnects — only `wg0`, the
+  WireGuard endpoint and loopback may send traffic. If the tunnel drops, the
+  container goes dark. If the kill switch cannot be installed (no iptables,
+  unparseable endpoint, no DNS server), the container refuses to start.
+- **IPv6 blocked:** IPv6 is never routed through the tunnel, so it is disabled
+  (`--sysctl net.ipv6.conf.all.disable_ipv6=1`) and blocked with ip6tables.
+- **DNS leak protection:** `/etc/resolv.conf` points at the tunnel DNS; port 53
+  inside the tunnel is only allowed to that server, and Docker's embedded
+  resolver (`127.0.0.11`, which resolves from the host) is blocked.
+- **SOCKS5 access control:** microsocks has no auth by default, so only the
+  Docker gateway (where your `127.0.0.1` published port arrives from) may
+  connect — other containers on the same network cannot use it as an open
+  proxy. Optional `SOCKS_USER` / `SOCKS_PASS` add username/password auth.
+- **Published on `127.0.0.1` only** — not reachable from your LAN.
+- **Hardened runtime:** dropped capabilities (`NET_ADMIN` only),
+  `no-new-privileges`, tmpfs, memory/pid limits, log rotation.
 - **Rules:**
-  - `config/wg0.conf` contains a private key → `chmod 600`, never commit it
-  - **Never `docker push`** the built image (the key can live in the filesystem)
-  - Never use `--network=host` (leaks routes to the host)
+  - `config/*.conf` contains a private key → `chmod 600`, never commit it.
+    The image itself contains no credentials.
+  - Never use `--network=host` (the tunnel routes would replace the host's)
   - Never share the container's network namespace with an untrusted container
-    (`--network=container:vpn-...`)
+    (`--network=container:aivpn-...`)
 
-## 🧰 Managed host wrapper
+### About `safefetch`
 
-For a persistent host installation, `scripts/aivpn` provides one safe command
-surface for location selection, supervision, status, egress checks and SOCKS
-smoke tests. It never creates or stores WireGuard credentials.
+`safefetch` is a **tripwire, not a guarantee.** It normalises the page
+(line breaks, HTML entities, zero-width characters, tags) and matches it
+against literal injection phrasing in [`data/pi-patterns.txt`](data/pi-patterns.txt).
+Paraphrased, translated or encoded attacks will get through — keep treating
+fetched content as untrusted. `SAFEFETCH_MODE=warn` passes content through
+with a warning on stderr instead of withholding it.
 
-```bash
-chmod 0755 scripts/aivpn
-sudo ln -sfn "$(pwd)/scripts/aivpn" /usr/local/bin/aivpn
+## ⚙️ Configuration
 
-# The config must already exist locally and be mode 600.
-aivpn up fi
-aivpn status
-aivpn ip
-aivpn socks
-aivpn test-all
-aivpn down
-```
-
-The included `docker-compose.yml` is a credential-free template. It expects a
-runtime-only file such as `config/fi.conf`; all `*.conf` files are ignored by
-Git. The service is hardened with dropped capabilities, `NET_ADMIN` only,
-`no-new-privileges`, localhost-only SOCKS5 publishing, resource limits, log
-rotation and a tunnel healthcheck. Do not publish port 1080 publicly.
+| Variable | Default | Meaning |
+|---|---|---|
+| `TUNNEL_DNS` | from config | Override the tunnel DNS server |
+| `HEALTH_INTERVAL` | `60` | Seconds between health checks |
+| `HEALTHCHECK_URL` | `https://api.ipify.org` | Egress check URL |
+| `SOCKS_ALLOW_FROM` | `gateway` | `gateway`, `any`, or comma-separated IPs/CIDRs |
+| `SOCKS_USER` / `SOCKS_PASS` | — | Optional SOCKS5 auth |
+| `SAFEFETCH_TIMEOUT` | `30` | Fetch timeout (s) |
+| `SAFEFETCH_MAX_BYTES` | `10485760` | Max response size |
+| `SAFEFETCH_MODE` | `block` | `block` or `warn` |
+| `PI_SCAN_TIMEOUT` | `60` | Max seconds for the scan (timeout = scanner error) |
+| `AIVPN_HOST_PORT` | `1080` | Host port used by the wrapper / compose |
+| `FORCE_USERSPACE_WG` | `0` | Force `wireguard-go` (testing) |
 
 ## ⚠️ Limitations
 
 | Item | Details |
 |---|---|
-| Proton device limit | 10 simultaneous devices (each container = one device) |
+| Proton device limit | 10 simultaneous devices (each config = one device) |
 | Netshield / Moderate NAT / Accelerator | Chosen when the config is generated, not switchable at runtime |
 | Secure Core | Not supported by third-party clients — regular servers work |
+| IPv6 | Not tunnelled; blocked inside the container |
 | Container-only | `curl` on the host does NOT go through the tunnel |
-| Healthcheck dependency | The default healthcheck uses `https://api.ipify.org`; override `HEALTHCHECK_URL` if that endpoint is unavailable |
+| Healthcheck dependency | Uses `https://api.ipify.org`; override `HEALTHCHECK_URL` if unavailable |
 
 ## 🔍 Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| `Exited(1)` / tunnel won't come up | Wrong/expired key, server down → `docker logs vpn-proton` |
-| Tunnel fails with `RTNETLINK answers: Operation not permitted` | Check `/dev/net/tun` and `NET_ADMIN`; AiVPN automatically falls back to bundled `wireguard-go` when the kernel module is unavailable |
-| Logs show `sysctl: ... Read-only file system` | Docker 29 mounts `/proc/sys` read-only; the entrypoint's manual bring-up already handles this — if you still see it, the image is stale → rebuild |
-| `AGENTVPN... 401` | Wrong config — Proton's generated `.conf` is ready to use as-is |
-| SOCKS5 not responding | Check the port: `docker port vpn-proton 1080` |
+| `config ... is not readable` | The container has no `CAP_DAC_OVERRIDE`: a mode-600 config must be owned by root → `sudo chown root:root config/*.conf` |
+| `Exited(1)` / tunnel won't come up | Wrong/expired key, server down → `docker logs aivpn-<location>` |
+| `no IPv4 DNS server in the config` | Add `DNS = 10.2.0.1` to the config or set `TUNNEL_DNS` |
+| `cannot block IPv6` | Run with `--sysctl net.ipv6.conf.all.disable_ipv6=1` (the wrapper and compose do this) |
+| Container won't start: `.../disable_ipv6: no such file` | Host boots with `ipv6.disable=1` → remove the `sysctls` lines from compose |
+| `RTNETLINK answers: Operation not permitted` | Check `/dev/net/tun` and `NET_ADMIN`; AiVPN falls back to `wireguard-go` when the kernel module is missing |
+| `sysctl: ... Read-only file system` | Stale image from before the manual bring-up → rebuild |
+| SOCKS5 not responding | `aivpn socks` / `docker port <name> 1080`; from another container set `SOCKS_ALLOW_FROM` |
 | Other VPNs break on the host | Never use `--network=host`; if it leaked: `ip link del wg0` + route cleanup |
+
+More in [`aivpn/references/troubleshooting.md`](aivpn/references/troubleshooting.md).
+
+## 🧪 Development
+
+```bash
+make smoke     # local tests, no Docker needed
+make lint      # shellcheck + hadolint
+```
+
+CI (`.github/workflows/ci.yml`) runs both and an end-to-end kill-switch test:
+it starts the image against an unreachable endpoint and asserts that nothing
+gets out — not through `wg0`, not around it via `eth0`, not over IPv6, not via
+Docker DNS — and that neighbour containers cannot use the SOCKS5 port.
 
 ## ☕ Support this project
 
@@ -326,6 +361,7 @@ project's development (and may earn you bonus months from Proton):
 ## 📜 License & credits
 
 - **License:** Apache-2.0 (see [LICENSE](LICENSE))
+- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 - **Inspiration:** [gendigitalinc/agentvpn](https://github.com/gendigitalinc/agentvpn) —
   entrypoint architecture (kill switch, microsocks ordering, reconnect loop)
 - **Protocol:** [WireGuard](https://www.wireguard.com/) — an
